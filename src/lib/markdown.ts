@@ -78,11 +78,15 @@ export function mdToHtml(md: string): string {
   }
   while (i < lines.length) {
     const line = lines[i]
-    if (/^```/.test(line)) {
+    const fence = line.match(/^([ \t]*)```/)
+    if (fence) {
+      // Fences may be indented (e.g. nested under a list item). Capture the
+      // opening indent and strip up to that much from each content line.
+      const indent = fence[1].length
       i++
       const code: string[] = []
-      while (i < lines.length && !/^```/.test(lines[i])) {
-        code.push(lines[i])
+      while (i < lines.length && !/^[ \t]*```/.test(lines[i])) {
+        code.push(lines[i].replace(/^[ \t]+/, (m) => m.slice(indent)))
         i++
       }
       i++
@@ -158,7 +162,7 @@ export function mdToHtml(md: string): string {
       i < lines.length &&
       !/^\s*$/.test(lines[i]) &&
       !/^(#{1,6})\s/.test(lines[i]) &&
-      !/^```/.test(lines[i]) &&
+      !/^[ \t]*```/.test(lines[i]) &&
       !/^>\s?/.test(lines[i]) &&
       !/^\s*[-*+]\s+/.test(lines[i]) &&
       !/^\s*\d+\.\s+/.test(lines[i]) &&

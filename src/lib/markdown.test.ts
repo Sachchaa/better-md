@@ -67,6 +67,18 @@ describe('mdToHtml', () => {
     expect(out).toContain('&lt;b&gt;x&lt;/b&gt;')
   })
 
+  it('renders indented (list-nested) fenced code blocks without stray backticks', () => {
+    const md = ['- `typedefs.graphql`: add', '  ```graphql', '  input X { id: ID! }', '  ```'].join(
+      '\n'
+    )
+    const out = mdToHtml(md)
+    expect(out).toContain('<pre')
+    // content is dedented and escaped, not left in a paragraph
+    expect(out).toContain('input X { id: ID! }')
+    // the bug symptom: leftover double backticks must not appear
+    expect(out).not.toContain('``')
+  })
+
   it('renders blockquotes and horizontal rules', () => {
     expect(mdToHtml('> quote')).toContain('<blockquote')
     expect(mdToHtml('---')).toContain('<hr')
