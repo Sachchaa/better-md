@@ -1,0 +1,90 @@
+@import 'tailwindcss';
+
+/* Map Tailwind's font utilities onto the theme's font variables so
+ * `font-sans` / `font-mono` follow the active [data-theme]. */
+@theme {
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Runtime theme tokens — switched via the [data-theme] attribute. */
+[data-theme] {
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+[data-theme='light'] {
+  --bg: #f4f4f2;
+  --panel: #ffffff;
+  --panel2: #f6f6f4;
+  --fg: #1b1b19;
+  --muted: #73736c;
+  --faint: #a3a39c;
+  --border: #e7e7e2;
+  --code-bg: #f1f1ed;
+  --accent: var(--accent-color, #3b6df2);
+  --selbg: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+[data-theme='dark'] {
+  --bg: #0d0d0f;
+  --panel: #161619;
+  --panel2: #1d1d21;
+  --fg: #e9e9e4;
+  --muted: #92928a;
+  --faint: #5e5e58;
+  --border: #28282c;
+  --code-bg: #1d1d22;
+  --accent: var(--accent-color, #5b87ff);
+  --selbg: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+textarea::selection {
+  background: var(--selbg);
+}
+[contenteditable]:focus {
+  outline: none;
+}
+[contenteditable] *::selection {
+  background: var(--selbg);
+}
+
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--faint) 55%, transparent);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+
+@keyframes fadein {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
