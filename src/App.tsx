@@ -2,6 +2,7 @@ import React from 'react'
 import { mdToHtml, htmlToMd } from './lib/markdown'
 import { SAMPLE_README, SAMPLE_NOTES, SAMPLE_TODO } from './lib/samples'
 import { newId } from './lib/id'
+import { resolveFileName } from './lib/filename'
 import { SEG_ON, SEG_OFF, TB_BTN, LABEL } from './ui/classes'
 import type { FileDoc, Layout, Props, Side, State } from './types'
 
@@ -39,6 +40,7 @@ export default class App extends React.Component<Props, State> {
       focusPane: 'edit',
       editingSide: 'init',
       dragOver: false,
+      renamingId: null,
     }
   }
 
@@ -173,6 +175,23 @@ export default class App extends React.Component<Props, State> {
     })
   }
 
+  startRename = (id: string): void => {
+    this.setState({ renamingId: id })
+  }
+  cancelRename = (): void => {
+    this.setState({ renamingId: null })
+  }
+  /** Commit a rename. Empty names cancel; otherwise the name is normalized
+   * (`.md` added if missing) and de-duplicated against the other files. */
+  commitRename = (id: string, raw: string): void => {
+    this.setState((s) => {
+      const taken = s.files.filter((f) => f.id !== id).map((f) => f.name)
+      const name = resolveFileName(raw, taken)
+      const files = name ? s.files.map((f) => (f.id === id ? { ...f, name } : f)) : s.files
+      return { renamingId: null, files }
+    })
+  }
+
   onDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
     e.preventDefault()
     if (!this.state.dragOver) this.setState({ dragOver: true })
@@ -283,15 +302,50 @@ export default class App extends React.Component<Props, State> {
 
   /** Sidebar / tab row: a select button plus a sibling delete button.
    * Two distinct buttons (never nested) keeps it valid + keyboard-accessible. */
+  /** Autofocusing input shown in place of the file name while renaming.
+   * Selects the basename (excludes the extension) for quick editing. */
+  private renameInput(f: FileDoc, widthClass: string) {
+    return (
+      <input
+        defaultValue={f.name}
+        autoFocus
+        spellCheck={false}
+        aria-label={`Rename ${f.name}`}
+        ref={(el) => {
+          if (!el) return
+          const dot = f.name.lastIndexOf('.')
+          el.setSelectionRange(0, dot > 0 ? dot : f.name.length)
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onBlur={(e) => this.commitRename(f.id, e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            this.commitRename(f.id, e.currentTarget.value)
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            this.cancelRename()
+          }
+        }}
+        className={
+          widthClass +
+          ' min-w-0 bg-[var(--bg)] text-[var(--fg)] border border-[var(--accent)] rounded-[5px] px-[5px] py-[2px] font-[inherit] outline-none'
+        }
+      />
+    )
+  }
+
   private renderFileRow(f: FileDoc, variant: 'list' | 'tab') {
     const active = f.id === this.state.activeId
+    const renaming = this.state.renamingId === f.id
     const dot =
       'w-[7px] h-[7px] rounded-full shrink-0 ' +
       (active ? 'bg-[var(--accent)]' : 'bg-[var(--faint)]')
-    const del =
+    const iconBtn =
       variant === 'list'
-        ? 'shrink-0 px-[3px] mr-[6px] rounded-[4px] border-0 bg-transparent text-[var(--faint)] text-[15px] leading-none cursor-pointer opacity-60 hover:text-[var(--fg)] hover:opacity-100'
-        : 'shrink-0 px-[2px] pr-[8px] rounded-[4px] border-0 bg-transparent text-[var(--faint)] text-[15px] leading-none cursor-pointer hover:text-[var(--fg)]'
+        ? 'shrink-0 px-[3px] rounded-[4px] border-0 bg-transparent text-[var(--faint)] text-[13px] leading-none cursor-pointer opacity-60 hover:text-[var(--fg)] hover:opacity-100'
+        : 'shrink-0 px-[2px] rounded-[4px] border-0 bg-transparent text-[var(--faint)] text-[13px] leading-none cursor-pointer hover:text-[var(--fg)]'
+    const del = iconBtn + (variant === 'list' ? ' mr-[6px] text-[15px]' : ' pr-[8px] text-[15px]')
 
     if (variant === 'list') {
       const wrap =
@@ -299,24 +353,45 @@ export default class App extends React.Component<Props, State> {
         (active ? 'bg-[var(--panel)] text-[var(--fg)]' : 'text-[var(--muted)]')
       return (
         <li key={f.id} className={wrap}>
-          <button
-            type="button"
-            onClick={() => this.switchFile(f.id)}
-            aria-current={active ? 'true' : undefined}
-            className="flex-1 min-w-0 flex items-center gap-[8px] px-[9px] py-[7px] bg-transparent border-0 cursor-pointer text-left text-inherit font-[inherit]"
-          >
-            <span aria-hidden="true" className={dot} />
-            <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{f.name}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => this.deleteFile(f.id)}
-            aria-label={`Delete ${f.name}`}
-            title="Delete"
-            className={del}
-          >
-            ×
-          </button>
+          {renaming ? (
+            <span className="flex-1 min-w-0 flex items-center gap-[8px] px-[9px] py-[7px]">
+              <span aria-hidden="true" className={dot} />
+              {this.renameInput(f, 'flex-1')}
+            </span>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => this.switchFile(f.id)}
+                onDoubleClick={() => this.startRename(f.id)}
+                aria-current={active ? 'true' : undefined}
+                className="flex-1 min-w-0 flex items-center gap-[8px] px-[9px] py-[7px] bg-transparent border-0 cursor-pointer text-left text-inherit font-[inherit]"
+              >
+                <span aria-hidden="true" className={dot} />
+                <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+                  {f.name}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => this.startRename(f.id)}
+                aria-label={`Rename ${f.name}`}
+                title="Rename"
+                className={iconBtn}
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                onClick={() => this.deleteFile(f.id)}
+                aria-label={`Delete ${f.name}`}
+                title="Delete"
+                className={del}
+              >
+                ×
+              </button>
+            </>
+          )}
         </li>
       )
     }
@@ -328,26 +403,36 @@ export default class App extends React.Component<Props, State> {
         : 'text-[var(--muted)] border-transparent')
     return (
       <div key={f.id} className={wrap}>
-        <button
-          type="button"
-          onClick={() => this.switchFile(f.id)}
-          aria-current={active ? 'true' : undefined}
-          className="flex items-center gap-[7px] pl-[12px] pr-[7px] h-full bg-transparent border-0 cursor-pointer text-inherit font-[inherit]"
-        >
-          <span aria-hidden="true" className={dot} />
-          <span className="overflow-hidden text-ellipsis whitespace-nowrap max-w-[160px]">
-            {f.name}
+        {renaming ? (
+          <span className="flex items-center gap-[7px] pl-[12px] pr-[7px] h-full">
+            <span aria-hidden="true" className={dot} />
+            {this.renameInput(f, 'w-[140px]')}
           </span>
-        </button>
-        <button
-          type="button"
-          onClick={() => this.deleteFile(f.id)}
-          aria-label={`Delete ${f.name}`}
-          title="Delete"
-          className={del}
-        >
-          ×
-        </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => this.switchFile(f.id)}
+              onDoubleClick={() => this.startRename(f.id)}
+              aria-current={active ? 'true' : undefined}
+              className="flex items-center gap-[7px] pl-[12px] pr-[7px] h-full bg-transparent border-0 cursor-pointer text-inherit font-[inherit]"
+            >
+              <span aria-hidden="true" className={dot} />
+              <span className="overflow-hidden text-ellipsis whitespace-nowrap max-w-[160px]">
+                {f.name}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => this.deleteFile(f.id)}
+              aria-label={`Delete ${f.name}`}
+              title="Delete"
+              className={del}
+            >
+              ×
+            </button>
+          </>
+        )}
       </div>
     )
   }

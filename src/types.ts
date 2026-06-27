@@ -25,4 +25,6 @@ export interface State {
   focusPane: Pane
   editingSide: Side
   dragOver: boolean
+  /** id of the file whose name is being edited inline, or null. */
+  renamingId: string | null
 }
