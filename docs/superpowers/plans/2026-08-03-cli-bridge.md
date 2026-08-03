@@ -45,7 +45,7 @@ Design spec: `docs/superpowers/specs/2026-08-03-cli-bridge-design.md`
 | `src/ui/ConflictBanner.tsx`  | Conflict / save-error UI                                              |
 
 **Create — config & tests:**
-`tsconfig.cli.json`, `vitest.workspace.ts`, `playwright.config.ts`, `e2e/cli-bridge.spec.ts`, plus `*.test.ts` beside each CLI and lib module.
+`tsconfig.cli.json`, `tsconfig.cli-test.json`, `vitest.workspace.ts`, `playwright.config.ts`, `e2e/cli-bridge.spec.ts`, plus `*.test.ts` beside each CLI and lib module.
 
 **Modify:**
 
@@ -70,7 +70,7 @@ Proves the riskiest integration first: that `.js`-extension imports resolve unde
 
 **Files:**
 
-- Create: `cli/types.ts`, `cli/args.ts`, `cli/args.test.ts`, `tsconfig.cli.json`, `vitest.workspace.ts`
+- Create: `cli/types.ts`, `cli/args.ts`, `cli/args.test.ts`, `tsconfig.cli.json`, `tsconfig.cli-test.json`, `vitest.workspace.ts`
 - Modify: `tsconfig.json`, `tsconfig.node.json`, `package.json`, `eslint.config.js`
 - Delete: `vitest.config.ts`
 
@@ -111,7 +111,41 @@ Create `tsconfig.cli.json`:
 }
 ```
 
-Add the reference in `tsconfig.json`:
+`tsconfig.cli.json` excludes test files so compiled tests never land in `dist-cli/`.
+That would leave `cli/**/*.test.ts` typechecked by nothing, while `src/**/*.test.ts`
+already is via `tsconfig.app.json` — so `strict` and `noUnusedLocals` would silently
+not apply to any CLI test. Add a typecheck-only companion, `tsconfig.cli-test.json`,
+mirroring how `tsconfig.app.json` and `tsconfig.node.json` are standalone `noEmit`
+projects in this repo:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true
+  },
+  "include": ["cli/**/*.ts"]
+}
+```
+
+No `exclude`, so tests are covered. Deliberately no `composite` and no `outDir`,
+matching `tsconfig.app.json`/`tsconfig.node.json`, which are referenced from the root
+config without `composite` and build cleanly under `tsc -b` today.
+
+> If `tsc -b` objects to `cli/*.ts` appearing in both this project and
+> `tsconfig.cli.json`, report it rather than inventing a restructure — the fix is a
+> plan decision.
+
+Add both references in `tsconfig.json`:
 
 ```json
 {
@@ -119,7 +153,8 @@ Add the reference in `tsconfig.json`:
   "references": [
     { "path": "./tsconfig.app.json" },
     { "path": "./tsconfig.node.json" },
-    { "path": "./tsconfig.cli.json" }
+    { "path": "./tsconfig.cli.json" },
+    { "path": "./tsconfig.cli-test.json" }
   ]
 }
 ```
