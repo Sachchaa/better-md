@@ -1789,6 +1789,8 @@ describe('LocalDocSource', () => {
     expect(listing.files.map((f) => f.relPath)).toEqual(['README.md', 'notes.md', 'todo.md'])
     expect(listing.active).toBe('README.md')
     expect(listing.files[0].content.length).toBeGreaterThan(0)
+    // Not disk-backed, so there is no mtime to compare saves against.
+    expect(listing.files.every((f) => f.mtimeMs === null)).toBe(true)
   })
 
   it('reads a listed document', async () => {
@@ -1830,6 +1832,13 @@ export interface DocFile {
   name: string
   relPath: string
   content: string
+  /**
+   * mtime the content was read at, or null when not disk-backed. Carried here
+   * so a listing is self-sufficient: the save conflict check needs it, and
+   * re-fetching it would both duplicate requests and leave a window where a
+   * save is wrongly treated as a new-file create.
+   */
+  mtimeMs: number | null
 }
 
 export interface DocRead {
@@ -1887,9 +1896,9 @@ export interface DocSource {
 }
 
 const SAMPLES: DocFile[] = [
-  { name: 'README.md', relPath: 'README.md', content: SAMPLE_README },
-  { name: 'notes.md', relPath: 'notes.md', content: SAMPLE_NOTES },
-  { name: 'todo.md', relPath: 'todo.md', content: SAMPLE_TODO },
+  { name: 'README.md', relPath: 'README.md', content: SAMPLE_README, mtimeMs: null },
+  { name: 'notes.md', relPath: 'notes.md', content: SAMPLE_NOTES, mtimeMs: null },
+  { name: 'todo.md', relPath: 'todo.md', content: SAMPLE_TODO, mtimeMs: null },
 ]
 
 /** Browser-only mode: seeded samples, in-memory, export-to-download. */
@@ -2010,8 +2019,8 @@ describe('ServerDocSource', () => {
     const listing = await source.list()
 
     expect(listing.files).toEqual([
-      { name: 'a.md', relPath: 'a.md', content: 'body of a.md' },
-      { name: 'b.md', relPath: 'b.md', content: 'body of b.md' },
+      { name: 'a.md', relPath: 'a.md', content: 'body of a.md', mtimeMs: 100 },
+      { name: 'b.md', relPath: 'b.md', content: 'body of b.md', mtimeMs: 100 },
     ])
     expect(listing.active).toBe('b.md')
   })
@@ -2170,11 +2179,16 @@ export class ServerDocSource implements DocSource {
       active: string
     }>(`${this.origin}/api/workspace`)
     const files = await Promise.all(
-      listing.files.map(async (file) => ({
-        name: file.name,
-        relPath: file.relPath,
-        content: (await this.read(file.relPath)).content,
-      }))
+      listing.files.map(async (file) => {
+        // read() already returns the mtime — keep it rather than re-fetching.
+        const doc = await this.read(file.relPath)
+        return {
+          name: file.name,
+          relPath: file.relPath,
+          content: doc.content,
+          mtimeMs: doc.mtimeMs,
+        }
+      })
     )
     return { files, active: listing.active }
   }
@@ -2540,8 +2554,11 @@ export function SaveErrorBanner({ message, onDismiss }: SaveErrorBannerProps): R
     // Honour the source's chosen active document — for --plan that is the
     // newest plan, which is the whole point of the flag.
     const active = files.find((f) => f.relPath === listing.active) ?? files[0]
+    // Seed the conflict-check baselines from the listing itself, so a save
+    // immediately after boot compares against a real mtime rather than null
+    // (which write() would interpret as "create a new file" and reject).
     const baseMtimeMs: Record<string, number | null> = {}
-    for (const doc of listing.files) baseMtimeMs[doc.relPath] = null
+    for (const doc of listing.files) baseMtimeMs[doc.relPath] = doc.mtimeMs
     this.setState({
       files,
       activeId: active.id,
@@ -2550,29 +2567,8 @@ export function SaveErrorBanner({ message, onDismiss }: SaveErrorBannerProps): R
       loading: false,
       editingSide: 'init',
     })
-    await this.refreshMtimes(listing.files.map((d) => d.relPath))
-  }
-
-  /** Record the mtime each document was loaded at, for the save conflict check. */
-  private async refreshMtimes(relPaths: string[]): Promise<void> {
-    if (!this.props.source.canSave) return
-    const entries = await Promise.all(
-      relPaths.map(async (relPath) => {
-        const doc = await this.props.source.read(relPath)
-        return [relPath, doc.mtimeMs] as const
-      })
-    )
-    this.setState((s) => {
-      const baseMtimeMs = { ...s.baseMtimeMs }
-      for (const [relPath, mtimeMs] of entries) baseMtimeMs[relPath] = mtimeMs
-      return { baseMtimeMs }
-    })
   }
 ```
-
-> `list()` already carries content, so `refreshMtimes` exists purely to learn the
-> mtimes. Both calls hit the same server-side read; the duplication is one extra
-> request per file at boot and keeps `DocFile` free of transport concerns.
 
 - [ ] **Step 4: Add the save path and Cmd+S handler**
 
