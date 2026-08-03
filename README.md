@@ -1,7 +1,7 @@
 # better-md
 
 **Markdown Dashboard** — a clean, two-way Markdown editor with a live, editable preview.
-Imported from the [Markdown Preview Dashboard](https://claude.ai/design/p/d4dbf5b5-f9ab-446f-9e25-24df344810f0) Claude Design project and implemented as a real app.
+Originally prototyped in Claude Design, then implemented as a real app.
 
 ## Stack
 

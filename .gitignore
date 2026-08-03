@@ -28,3 +28,6 @@ pnpm-debug.log*
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Vendored agent skills — third-party content, restored from skills-lock.json
+.agents/skills/
