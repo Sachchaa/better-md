@@ -31,3 +31,6 @@ pnpm-debug.log*
 
 # Vendored agent skills — third-party content, restored from skills-lock.json
 .agents/skills/
+
+# Agent worktrees (created by EnterWorktree)
+.claude/worktrees/
