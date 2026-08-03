@@ -28,13 +28,13 @@ edits saving back to that file.
 
 ## Decisions
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Write-back | Explicit save (Cmd+S) with a dirty indicator | Auto-save would mutate `~/.claude/plans` files on every stray keystroke |
-| Targets | file, directory, or `--plan` | One resolver, three entry points; `--plan` is the actual motivating case. `--plan` lists every plan in the sidebar with the newest one active, so switching between recent plans needs no re-run |
-| External changes | Auto-reload when clean, conflict banner when dirty | Plans update live as Claude revises them, without ever discarding local edits |
-| Serving | Standalone Node server over prebuilt `dist/` | Zero runtime deps on Node 22; a Vite-plugin approach would ship a dev server as an end-user tool |
-| Lost-update guard | `mtime` comparison → HTTP 409 | Cheap, and covers the real case (file rewritten between load and save) |
+| Decision          | Choice                                             | Rationale                                                                                                                                                                                        |
+| ----------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Write-back        | Explicit save (Cmd+S) with a dirty indicator       | Auto-save would mutate `~/.claude/plans` files on every stray keystroke                                                                                                                          |
+| Targets           | file, directory, or `--plan`                       | One resolver, three entry points; `--plan` is the actual motivating case. `--plan` lists every plan in the sidebar with the newest one active, so switching between recent plans needs no re-run |
+| External changes  | Auto-reload when clean, conflict banner when dirty | Plans update live as Claude revises them, without ever discarding local edits                                                                                                                    |
+| Serving           | Standalone Node server over prebuilt `dist/`       | Zero runtime deps on Node 22; a Vite-plugin approach would ship a dev server as an end-user tool                                                                                                 |
+| Lost-update guard | `mtime` comparison → HTTP 409                      | Cheap, and covers the real case (file rewritten between load and save)                                                                                                                           |
 
 ## Architecture
 
@@ -47,14 +47,14 @@ argv → args.ts → resolve.ts → Workspace ─┬→ server.ts → browser
                                           └→ watch.ts ──┘ (SSE)
 ```
 
-| Module | Responsibility |
-|---|---|
-| `cli/args.ts` | argv → `{target, plan, port, open}` using `node:util` `parseArgs`. Pure. |
-| `cli/resolve.ts` | args → workspace descriptor `{root, files[], active}`. Single file (root = its parent, `files` = just it); directory (non-recursive `*.md`, `*.markdown`, `*.txt`, active = first alphabetically); `--plan` (root = `~/.claude/plans`, all plans listed, **active = newest by mtime**). |
-| `cli/workspace.ts` | The only module that touches file contents: `list()`, `read()`, `write()`. All path confinement lives here. |
-| `cli/watch.ts` | `fs.watch` on the root, debounced 50ms (editors write in bursts), emits change events. |
-| `cli/server.ts` | `node:http`: static `dist/`, JSON API, SSE. Holds a `Workspace`; imports no `fs`. |
-| `cli/index.ts` | Wiring, browser open, SIGINT teardown. |
+| Module             | Responsibility                                                                                                                                                                                                                                                                          |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/args.ts`      | argv → `{target, plan, port, open}` using `node:util` `parseArgs`. Pure.                                                                                                                                                                                                                |
+| `cli/resolve.ts`   | args → workspace descriptor `{root, files[], active}`. Single file (root = its parent, `files` = just it); directory (non-recursive `*.md`, `*.markdown`, `*.txt`, active = first alphabetically); `--plan` (root = `~/.claude/plans`, all plans listed, **active = newest by mtime**). |
+| `cli/workspace.ts` | The only module that touches file contents: `list()`, `read()`, `write()`. All path confinement lives here.                                                                                                                                                                             |
+| `cli/watch.ts`     | `fs.watch` on the root, debounced 50ms (editors write in bursts), emits change events.                                                                                                                                                                                                  |
+| `cli/server.ts`    | `node:http`: static `dist/`, JSON API, SSE. Holds a `Workspace`; imports no `fs`.                                                                                                                                                                                                       |
+| `cli/index.ts`     | Wiring, browser open, SIGINT teardown.                                                                                                                                                                                                                                                  |
 
 `workspace.ts` is the security-critical unit and is deliberately small (~40 lines) with no
 HTTP in it, so it can be tested exhaustively. `server.ts` cannot bypass it: it has no
@@ -76,8 +76,13 @@ GET  /api/workspace       → {files:[{name,relPath}], active}
 GET  /api/doc?path=<rel>  → {relPath, content, mtimeMs}
 PUT  /api/doc             → body {relPath, content, baseMtimeMs}
                             → 200 {mtimeMs} | 409 when disk mtime ≠ baseMtimeMs
-GET  /api/events          → SSE: {type:"changed"|"removed", relPath, mtimeMs}
+GET  /api/events          → SSE: {type:"changed"|"removed", relPath}
 ```
+
+The change event carries no content or mtime — the client re-reads via `/api/doc`,
+so there is one code path for loading a document rather than two. The client also
+surfaces `connected` / `disconnected` events of its own when the stream opens or
+drops, which is what drives the "not watching" indicator below.
 
 ### Security model
 

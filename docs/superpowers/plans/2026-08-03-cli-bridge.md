@@ -1,0 +1,3134 @@
+# better-md CLI Bridge Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Ship a `better-md` CLI that opens real `.md` files from disk in the existing React app, with explicit save-back, live reload on external changes, and a hardened localhost server.
+
+**Architecture:** A standalone Node HTTP server (`cli/`) serves the prebuilt `dist/` bundle plus a small JSON API over a single workspace directory. The React app detects a per-run token in its URL and swaps its document source from in-memory samples to the API. All filesystem access funnels through one confinement-checked module.
+
+**Tech Stack:** Node 22 (stdlib only — `node:http`, `node:fs`, `node:crypto`, `node:util`), TypeScript 5.6 strict, React 19 (existing class component), Vite 5, Vitest 2.1, Playwright (new devDependency).
+
+Design spec: `docs/superpowers/specs/2026-08-03-cli-bridge-design.md`
+
+## Global Constraints
+
+- **Zero new runtime dependencies.** `dependencies` stays exactly `react` + `react-dom`. New devDependencies allowed: `@types/node`, `@playwright/test`.
+- **Node ≥ 22** required (uses `parseArgs`, `fs.watch`, `crypto.timingSafeEqual`).
+- **All relative imports inside `cli/` MUST use explicit `.js` extensions** (`./types.js`, not `./types`). The CLI compiles to Node ESM under `module: NodeNext`; extensionless relative imports fail at runtime.
+- **Server binds `127.0.0.1` only.** Never `0.0.0.0`.
+- **Never log the token** to stdout, stderr, or any file. It appears only in the URL handed to the browser.
+- TypeScript `strict`, `noUnusedLocals`, `noUnusedParameters` all stay on. `pnpm lint`, `pnpm typecheck`, `pnpm test` must pass at the end of every task.
+- Baseline at plan time is green: typecheck ✓, lint ✓, 22 tests passing.
+- Commit after every task.
+
+## File Structure
+
+**Create — CLI (Node):**
+
+| File               | Responsibility                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| `cli/types.ts`     | Shared CLI types: `CliOptions`, `WorkspaceFile`, `WorkspaceDescriptor`, `WatchEvent`  |
+| `cli/args.ts`      | `argv` → `CliOptions`. Pure, no I/O.                                                  |
+| `cli/resolve.ts`   | `CliOptions` → `WorkspaceDescriptor`. The three entry points (file / dir / `--plan`). |
+| `cli/workspace.ts` | **Only module that reads or writes document contents.** All path confinement.         |
+| `cli/watch.ts`     | Debounced `fs.watch` wrapper with an injectable watcher factory.                      |
+| `cli/server.ts`    | `node:http` server: static assets, JSON API, SSE. No `fs` import for documents.       |
+| `cli/index.ts`     | Entry point: wiring, browser open, SIGINT teardown. Has the shebang.                  |
+
+**Create — app (browser):**
+
+| File                         | Responsibility                                                        |
+| ---------------------------- | --------------------------------------------------------------------- |
+| `src/lib/docSource.ts`       | `DocSource` interface + `LocalDocSource` (today's in-memory behavior) |
+| `src/lib/serverDocSource.ts` | `ServerDocSource` — talks to the CLI API, streams SSE                 |
+| `src/lib/detectSource.ts`    | Boot-time choice between the two                                      |
+| `src/ui/ConflictBanner.tsx`  | Conflict / save-error UI                                              |
+
+**Create — config & tests:**
+`tsconfig.cli.json`, `vitest.workspace.ts`, `playwright.config.ts`, `e2e/cli-bridge.spec.ts`, plus `*.test.ts` beside each CLI and lib module.
+
+**Modify:**
+
+| File                    | Change                                                              |
+| ----------------------- | ------------------------------------------------------------------- |
+| `src/types.ts`          | `FileDoc` gains `relPath?`; `State` gains disk-mode fields          |
+| `src/main.tsx`          | Pick a source, strip the token from the URL, pass `source` to `App` |
+| `src/App.tsx:9-45`      | `source` prop, async load, dirty tracking, Cmd+S, conflict state    |
+| `package.json`          | `bin`, `build:cli` + `test:e2e` scripts, `engines`, devDeps         |
+| `tsconfig.json`         | Add `./tsconfig.cli.json` reference                                 |
+| `tsconfig.node.json:14` | `include` → `vitest.workspace.ts` instead of `vitest.config.ts`     |
+| `eslint.config.js`      | Node globals for `cli/` + `e2e/`; ignore `dist-cli`                 |
+| `README.md`             | CLI usage + security model                                          |
+
+**Delete:** `vitest.config.ts` (replaced by `vitest.workspace.ts`).
+
+---
+
+### Task 1: CLI build target and argument parsing
+
+Proves the riskiest integration first: that `.js`-extension imports resolve under both `tsc` emit and Vitest, and that Node-environment tests run alongside the existing jsdom ones.
+
+**Files:**
+
+- Create: `cli/types.ts`, `cli/args.ts`, `cli/args.test.ts`, `tsconfig.cli.json`, `vitest.workspace.ts`
+- Modify: `tsconfig.json`, `tsconfig.node.json`, `package.json`, `eslint.config.js`
+- Delete: `vitest.config.ts`
+
+**Interfaces:**
+
+- Consumes: nothing.
+- Produces: `CliOptions`, `WorkspaceFile`, `WorkspaceDescriptor`, `WatchEvent` (from `cli/types.ts`); `parseCliArgs(argv: string[]): CliOptions`, `UsageError`, `USAGE` (from `cli/args.ts`).
+
+- [ ] **Step 1: Add `@types/node` and wire up the CLI build target**
+
+```bash
+pnpm add -D @types/node@^22
+```
+
+Create `tsconfig.cli.json`:
+
+```json
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "outDir": "./dist-cli",
+    "rootDir": "./cli",
+    "tsBuildInfoFile": "./tsconfig.cli.tsbuildinfo",
+    "sourceMap": true,
+    "declaration": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["cli/**/*.ts"],
+  "exclude": ["cli/**/*.test.ts"]
+}
+```
+
+Add the reference in `tsconfig.json`:
+
+```json
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" },
+    { "path": "./tsconfig.cli.json" }
+  ]
+}
+```
+
+- [ ] **Step 2: Replace the Vitest config with a two-project workspace**
+
+Delete `vitest.config.ts` and create `vitest.workspace.ts`:
+
+```ts
+import { defineWorkspace } from 'vitest/config'
+
+export default defineWorkspace([
+  {
+    test: {
+      name: 'app',
+      environment: 'jsdom',
+      include: ['src/**/*.test.ts'],
+    },
+  },
+  {
+    test: {
+      name: 'cli',
+      environment: 'node',
+      include: ['cli/**/*.test.ts'],
+    },
+  },
+])
+```
+
+Update `tsconfig.node.json` line 14:
+
+```json
+  "include": ["vite.config.ts", "vitest.workspace.ts"]
+```
+
+- [ ] **Step 3: Teach ESLint about Node files**
+
+In `eslint.config.js`, change the ignores entry and append a Node block as the last argument to `tseslint.config(...)`:
+
+```js
+  { ignores: ['dist', 'dist-cli'] },
+```
+
+```js
+  {
+    files: ['cli/**/*.ts', 'e2e/**/*.ts', 'vitest.workspace.ts', 'vite.config.ts'],
+    languageOptions: {
+      globals: globals.node,
+    },
+  }
+```
+
+- [ ] **Step 4: Add scripts, bin, and engines to `package.json`**
+
+```json
+  "bin": { "better-md": "./dist-cli/index.js" },
+  "engines": { "node": ">=22" },
+```
+
+In `scripts`, add:
+
+```json
+    "build:cli": "tsc -p tsconfig.cli.json",
+    "test:e2e": "playwright test",
+```
+
+- [ ] **Step 5: Write `cli/types.ts`**
+
+```ts
+/** Parsed command-line options. */
+export interface CliOptions {
+  /** File or directory path, or null when --plan was used. */
+  target: string | null
+  plan: boolean
+  /** 0 means "let the OS pick an ephemeral port". */
+  port: number
+  open: boolean
+}
+
+/** One document in the workspace. `relPath` is always a bare filename. */
+export interface WorkspaceFile {
+  name: string
+  relPath: string
+}
+
+export interface WorkspaceDescriptor {
+  /** Absolute path to the directory that bounds all file access. */
+  root: string
+  files: WorkspaceFile[]
+  /** relPath of the document to open first. */
+  active: string
+}
+
+export interface WatchEvent {
+  type: 'changed' | 'removed'
+  relPath: string
+}
+```
+
+- [ ] **Step 6: Write the failing test**
+
+Create `cli/args.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { parseCliArgs, UsageError } from './args.js'
+
+describe('parseCliArgs', () => {
+  it('accepts a single file target', () => {
+    expect(parseCliArgs(['notes.md'])).toEqual({
+      target: 'notes.md',
+      plan: false,
+      port: 0,
+      open: true,
+    })
+  })
+
+  it('accepts --plan with no positional', () => {
+    expect(parseCliArgs(['--plan'])).toEqual({
+      target: null,
+      plan: true,
+      port: 0,
+      open: true,
+    })
+  })
+
+  it('rejects --plan combined with a positional target', () => {
+    expect(() => parseCliArgs(['--plan', 'notes.md'])).toThrow(UsageError)
+  })
+
+  it('rejects no target at all', () => {
+    expect(() => parseCliArgs([])).toThrow(UsageError)
+  })
+
+  it('rejects more than one positional', () => {
+    expect(() => parseCliArgs(['a.md', 'b.md'])).toThrow(UsageError)
+  })
+
+  it('parses --port', () => {
+    expect(parseCliArgs(['--port', '8080', 'a.md']).port).toBe(8080)
+  })
+
+  it('rejects a non-numeric port', () => {
+    expect(() => parseCliArgs(['--port', 'abc', 'a.md'])).toThrow(UsageError)
+  })
+
+  it('rejects an out-of-range port', () => {
+    expect(() => parseCliArgs(['--port', '99999', 'a.md'])).toThrow(UsageError)
+  })
+
+  it('honours --no-open', () => {
+    expect(parseCliArgs(['--no-open', 'a.md']).open).toBe(false)
+  })
+
+  it('reports --help via UsageError carrying the usage text', () => {
+    expect(() => parseCliArgs(['--help'])).toThrow(UsageError)
+  })
+})
+```
+
+- [ ] **Step 7: Run the test to verify it fails**
+
+Run: `pnpm test`
+Expected: FAIL — `Failed to resolve import "./args.js"`. This also confirms the `cli` Vitest project is picking the file up.
+
+- [ ] **Step 8: Implement `cli/args.ts`**
+
+```ts
+import { parseArgs } from 'node:util'
+import type { CliOptions } from './types.js'
+
+/** Thrown for any bad invocation, and for --help (message is the usage text). */
+export class UsageError extends Error {}
+
+export const USAGE = `better-md — open markdown files from disk in the better-md editor
+
+Usage:
+  better-md <file.md>        open a single file
+  better-md <directory>      open every markdown file in a directory
+  better-md --plan           open Claude Code's plans (~/.claude/plans)
+
+Options:
+  --port <n>   listen on a specific port (default: an ephemeral port)
+  --no-open    print the URL instead of opening a browser
+  --help       show this message`
+
+function parsePort(raw: string): number {
+  if (!/^\d+$/.test(raw)) {
+    throw new UsageError(`--port expects a number, got "${raw}"`)
+  }
+  const port = Number(raw)
+  if (port < 0 || port > 65535) {
+    throw new UsageError(`--port must be between 0 and 65535, got ${port}`)
+  }
+  return port
+}
+
+export function parseCliArgs(argv: string[]): CliOptions {
+  let values: { plan?: boolean; port?: string; 'no-open'?: boolean; help?: boolean }
+  let positionals: string[]
+  try {
+    const parsed = parseArgs({
+      args: argv,
+      options: {
+        plan: { type: 'boolean', default: false },
+        port: { type: 'string' },
+        'no-open': { type: 'boolean', default: false },
+        help: { type: 'boolean', default: false },
+      },
+      allowPositionals: true,
+    })
+    values = parsed.values
+    positionals = parsed.positionals
+  } catch (err) {
+    throw new UsageError(err instanceof Error ? err.message : String(err))
+  }
+
+  if (values.help) throw new UsageError(USAGE)
+
+  if (positionals.length > 1) {
+    throw new UsageError(`expected at most one file or directory, got ${positionals.length}`)
+  }
+  const target = positionals[0] ?? null
+
+  if (values.plan && target !== null) {
+    throw new UsageError('--plan cannot be combined with a file or directory argument')
+  }
+  if (!values.plan && target === null) {
+    throw new UsageError('missing a file or directory argument (or pass --plan)')
+  }
+
+  return {
+    target,
+    plan: values.plan === true,
+    port: values.port === undefined ? 0 : parsePort(values.port),
+    open: values['no-open'] !== true,
+  }
+}
+```
+
+- [ ] **Step 9: Run the tests to verify they pass**
+
+Run: `pnpm test`
+Expected: PASS — 32 tests (22 existing + 10 new).
+
+- [ ] **Step 10: Verify the CLI build target emits and lints**
+
+Run: `pnpm build:cli && pnpm typecheck && pnpm lint`
+Expected: all exit 0, and `dist-cli/args.js` exists containing `from "./types.js"` — proving the extension convention survives emit.
+
+- [ ] **Step 11: Add `dist-cli` to `.gitignore` and commit**
+
+Append to the "Build output" section of `.gitignore`:
+
+```
+dist-cli/
+*.tsbuildinfo
+```
+
+`*.tsbuildinfo` is already covered — verify before adding a duplicate.
+
+```bash
+git add cli tsconfig.cli.json tsconfig.json tsconfig.node.json vitest.workspace.ts package.json pnpm-lock.yaml eslint.config.js .gitignore
+git rm vitest.config.ts
+git commit -m "feat(cli): add CLI build target and argument parsing"
+```
+
+---
+
+### Task 2: Workspace resolution
+
+**Files:**
+
+- Create: `cli/resolve.ts`, `cli/resolve.test.ts`
+
+**Interfaces:**
+
+- Consumes: `CliOptions`, `WorkspaceDescriptor`, `WorkspaceFile` from `./types.js`.
+- Produces: `resolveWorkspace(opts: CliOptions, plansDir?: string): Promise<WorkspaceDescriptor>`, `ResolveError`, `DOC_EXTENSIONS`, `PLANS_DIR`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `cli/resolve.test.ts`:
+
+```ts
+import { afterEach, describe, expect, it } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { ResolveError, resolveWorkspace } from './resolve.js'
+import type { CliOptions } from './types.js'
+
+const dirs: string[] = []
+
+async function tmpDir(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-resolve-'))
+  dirs.push(dir)
+  return dir
+}
+
+function opts(over: Partial<CliOptions>): CliOptions {
+  return { target: null, plan: false, port: 0, open: false, ...over }
+}
+
+/** Write a file with an explicit mtime so "newest" ordering is deterministic. */
+async function writeAt(dir: string, name: string, body: string, epochMs: number): Promise<void> {
+  const full = path.join(dir, name)
+  await fs.writeFile(full, body, 'utf8')
+  const when = new Date(epochMs)
+  await fs.utimes(full, when, when)
+}
+
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((d) => fs.rm(d, { recursive: true, force: true })))
+})
+
+describe('resolveWorkspace', () => {
+  it('resolves a single file to its parent directory', async () => {
+    const dir = await tmpDir()
+    await writeAt(dir, 'notes.md', '# hi', 1_000_000)
+
+    const ws = await resolveWorkspace(opts({ target: path.join(dir, 'notes.md') }))
+
+    expect(ws.root).toBe(await fs.realpath(dir))
+    expect(ws.files).toEqual([{ name: 'notes.md', relPath: 'notes.md' }])
+    expect(ws.active).toBe('notes.md')
+  })
+
+  it('lists a directory alphabetically and activates the first entry', async () => {
+    const dir = await tmpDir()
+    await writeAt(dir, 'zeta.md', 'z', 3_000_000)
+    await writeAt(dir, 'alpha.markdown', 'a', 1_000_000)
+    await writeAt(dir, 'notes.txt', 'n', 2_000_000)
+    await writeAt(dir, 'ignored.png', 'x', 2_000_000)
+
+    const ws = await resolveWorkspace(opts({ target: dir }))
+
+    expect(ws.files.map((f) => f.relPath)).toEqual(['alpha.markdown', 'notes.txt', 'zeta.md'])
+    expect(ws.active).toBe('alpha.markdown')
+  })
+
+  it('activates the newest file for --plan but lists them all', async () => {
+    const plans = await tmpDir()
+    await writeAt(plans, 'older.md', 'o', 1_000_000)
+    await writeAt(plans, 'newest.md', 'n', 9_000_000)
+    await writeAt(plans, 'middle.md', 'm', 5_000_000)
+
+    const ws = await resolveWorkspace(opts({ plan: true }), plans)
+
+    expect(ws.active).toBe('newest.md')
+    expect(ws.files.map((f) => f.relPath).sort()).toEqual(['middle.md', 'newest.md', 'older.md'])
+  })
+
+  it('errors when the target does not exist', async () => {
+    const dir = await tmpDir()
+    await expect(resolveWorkspace(opts({ target: path.join(dir, 'nope.md') }))).rejects.toThrow(
+      /no such file or directory/
+    )
+  })
+
+  it('errors when a directory holds no documents', async () => {
+    const dir = await tmpDir()
+    await expect(resolveWorkspace(opts({ target: dir }))).rejects.toThrow(ResolveError)
+  })
+
+  it('errors with an install hint when the plans directory is missing', async () => {
+    const dir = await tmpDir()
+    const missing = path.join(dir, 'no-plans-here')
+    await expect(resolveWorkspace(opts({ plan: true }), missing)).rejects.toThrow(
+      /Is Claude Code installed\?/
+    )
+  })
+
+  it('errors when the plans directory exists but is empty', async () => {
+    const plans = await tmpDir()
+    await expect(resolveWorkspace(opts({ plan: true }), plans)).rejects.toThrow(
+      /Is Claude Code installed\?/
+    )
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pnpm test -- cli/resolve.test.ts`
+Expected: FAIL — cannot resolve `./resolve.js`.
+
+- [ ] **Step 3: Implement `cli/resolve.ts`**
+
+```ts
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import type { CliOptions, WorkspaceDescriptor, WorkspaceFile } from './types.js'
+
+/** Extensions treated as editable documents. Lowercase, dot-prefixed. */
+export const DOC_EXTENSIONS = ['.md', '.markdown', '.txt'] as const
+
+export const PLANS_DIR = path.join(os.homedir(), '.claude', 'plans')
+
+/** Thrown when the requested target cannot become a usable workspace. */
+export class ResolveError extends Error {}
+
+function isDoc(name: string): boolean {
+  const ext = path.extname(name).toLowerCase()
+  return (DOC_EXTENSIONS as readonly string[]).includes(ext)
+}
+
+async function listDocs(dir: string): Promise<string[]> {
+  const entries = await fs.readdir(dir, { withFileTypes: true })
+  return entries
+    .filter((e) => (e.isFile() || e.isSymbolicLink()) && isDoc(e.name))
+    .map((e) => e.name)
+}
+
+function toFiles(names: string[]): WorkspaceFile[] {
+  return names.map((name) => ({ name, relPath: name }))
+}
+
+async function newestByMtime(dir: string, names: string[]): Promise<string> {
+  const stats = await Promise.all(
+    names.map(async (name) => ({ name, mtimeMs: (await fs.stat(path.join(dir, name))).mtimeMs }))
+  )
+  stats.sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
+  return stats[0].name
+}
+
+async function resolvePlans(plansDir: string): Promise<WorkspaceDescriptor> {
+  const hint = `No plans directory found at ${plansDir}. Is Claude Code installed? Pass a file or directory instead.`
+  let names: string[]
+  try {
+    names = await listDocs(plansDir)
+  } catch {
+    throw new ResolveError(hint)
+  }
+  if (names.length === 0) throw new ResolveError(hint)
+
+  const root = await fs.realpath(plansDir)
+  return { root, files: toFiles(names.sort()), active: await newestByMtime(root, names) }
+}
+
+async function resolveTarget(target: string): Promise<WorkspaceDescriptor> {
+  const abs = path.resolve(target)
+  let stat: Awaited<ReturnType<typeof fs.stat>>
+  try {
+    stat = await fs.stat(abs)
+  } catch {
+    throw new ResolveError(`no such file or directory: ${target}`)
+  }
+
+  if (stat.isDirectory()) {
+    const names = await listDocs(abs)
+    if (names.length === 0) {
+      throw new ResolveError(`no ${DOC_EXTENSIONS.join(', ')} files found in ${target}`)
+    }
+    const sorted = names.sort()
+    return { root: await fs.realpath(abs), files: toFiles(sorted), active: sorted[0] }
+  }
+
+  if (!isDoc(abs)) {
+    throw new ResolveError(
+      `${target} is not a markdown file (expected one of ${DOC_EXTENSIONS.join(', ')})`
+    )
+  }
+  const name = path.basename(abs)
+  return {
+    root: await fs.realpath(path.dirname(abs)),
+    files: toFiles([name]),
+    active: name,
+  }
+}
+
+export async function resolveWorkspace(
+  opts: CliOptions,
+  plansDir: string = PLANS_DIR
+): Promise<WorkspaceDescriptor> {
+  if (opts.plan) return resolvePlans(plansDir)
+  if (opts.target === null) throw new ResolveError('no target to resolve')
+  return resolveTarget(opts.target)
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `pnpm test -- cli/resolve.test.ts`
+Expected: PASS — 7 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add cli/resolve.ts cli/resolve.test.ts
+git commit -m "feat(cli): resolve files, directories, and --plan into a workspace"
+```
+
+---
+
+### Task 3: Workspace file access and path confinement
+
+The security core. Every rejection here is a vulnerability that does not happen.
+
+**Files:**
+
+- Create: `cli/workspace.ts`, `cli/workspace.test.ts`
+
+**Interfaces:**
+
+- Consumes: `WorkspaceDescriptor`, `WorkspaceFile` from `./types.js`; `DOC_EXTENSIONS` from `./resolve.js`.
+- Produces: `class Workspace` with `root: string`, `active: string`, `list(): WorkspaceFile[]`, `read(relPath): Promise<DocRead>`, `write(relPath, content, baseMtimeMs): Promise<{ mtimeMs: number }>`; plus `PathError`, `ConflictError`, `DocRead`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `cli/workspace.test.ts`:
+
+```ts
+import { afterEach, describe, expect, it } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { ConflictError, PathError, Workspace } from './workspace.js'
+
+const dirs: string[] = []
+
+async function fixture(): Promise<{ root: string; outside: string; ws: Workspace }> {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-ws-'))
+  dirs.push(base)
+  const root = path.join(base, 'root')
+  const outside = path.join(base, 'outside')
+  await fs.mkdir(root)
+  await fs.mkdir(outside)
+  await fs.mkdir(path.join(root, 'sub'))
+  await fs.writeFile(path.join(root, 'notes.md'), '# notes', 'utf8')
+  await fs.writeFile(path.join(root, 'sub', 'nested.md'), 'nested', 'utf8')
+  await fs.writeFile(path.join(outside, 'secret.md'), 'SECRET', 'utf8')
+  const ws = new Workspace({
+    root: await fs.realpath(root),
+    files: [{ name: 'notes.md', relPath: 'notes.md' }],
+    active: 'notes.md',
+  })
+  return { root, outside, ws }
+}
+
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((d) => fs.rm(d, { recursive: true, force: true })))
+})
+
+describe('Workspace path confinement', () => {
+  const rejected: Array<[string, string]> = [
+    ['parent traversal', '../outside/secret.md'],
+    ['deep traversal', 'a/../../outside/secret.md'],
+    ['absolute path', '/etc/passwd'],
+    ['subdirectory', 'sub/nested.md'],
+    ['null byte', 'notes\u0000.md'],
+    ['empty string', ''],
+    ['bare dot', '.'],
+    ['percent-encoded traversal', '%2e%2e/secret.md'],
+    ['disallowed extension', 'notes.exe'],
+  ]
+
+  for (const [label, relPath] of rejected) {
+    it(`rejects ${label}`, async () => {
+      const { ws } = await fixture()
+      await expect(ws.read(relPath)).rejects.toThrow(PathError)
+      await expect(ws.write(relPath, 'pwned', null)).rejects.toThrow(PathError)
+    })
+  }
+
+  it('rejects a symlink that resolves outside the root', async () => {
+    const { root, outside, ws } = await fixture()
+    await fs.symlink(path.join(outside, 'secret.md'), path.join(root, 'escape.md'))
+
+    await expect(ws.read('escape.md')).rejects.toThrow(PathError)
+    // The outside file must be untouched.
+    expect(await fs.readFile(path.join(outside, 'secret.md'), 'utf8')).toBe('SECRET')
+  })
+
+  it('reads a confined file', async () => {
+    const { ws } = await fixture()
+    const doc = await ws.read('notes.md')
+    expect(doc.content).toBe('# notes')
+    expect(doc.relPath).toBe('notes.md')
+    expect(doc.mtimeMs).toBeGreaterThan(0)
+  })
+})
+
+describe('Workspace writes', () => {
+  it('writes when the base mtime matches', async () => {
+    const { root, ws } = await fixture()
+    const before = await ws.read('notes.md')
+
+    const result = await ws.write('notes.md', 'updated', before.mtimeMs)
+
+    expect(await fs.readFile(path.join(root, 'notes.md'), 'utf8')).toBe('updated')
+    expect(result.mtimeMs).toBeGreaterThanOrEqual(before.mtimeMs)
+  })
+
+  it('throws ConflictError when the file moved underneath', async () => {
+    const { ws } = await fixture()
+    const before = await ws.read('notes.md')
+
+    await expect(ws.write('notes.md', 'mine', before.mtimeMs - 5000)).rejects.toThrow(ConflictError)
+  })
+
+  it('creates a new file when baseMtimeMs is null', async () => {
+    const { root, ws } = await fixture()
+    await ws.write('fresh.md', 'brand new', null)
+    expect(await fs.readFile(path.join(root, 'fresh.md'), 'utf8')).toBe('brand new')
+  })
+
+  it('refuses to overwrite an existing file when baseMtimeMs is null', async () => {
+    const { ws } = await fixture()
+    await expect(ws.write('notes.md', 'clobber', null)).rejects.toThrow(ConflictError)
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pnpm test -- cli/workspace.test.ts`
+Expected: FAIL — cannot resolve `./workspace.js`.
+
+- [ ] **Step 3: Implement `cli/workspace.ts`**
+
+```ts
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { DOC_EXTENSIONS } from './resolve.js'
+import type { WorkspaceDescriptor, WorkspaceFile } from './types.js'
+
+/** Thrown when a requested path is not a plain document inside the root. */
+export class PathError extends Error {}
+
+/** Thrown when the on-disk state no longer matches what the client loaded. */
+export class ConflictError extends Error {
+  constructor(
+    message: string,
+    readonly mtimeMs: number
+  ) {
+    super(message)
+  }
+}
+
+export interface DocRead {
+  relPath: string
+  content: string
+  mtimeMs: number
+}
+
+/**
+ * The single gateway to document contents. Every path crossing this boundary is
+ * validated to be a bare filename with an allowed extension that resolves,
+ * after symlinks, inside `root`. `server.ts` deliberately holds no `fs` import
+ * so it cannot reach around these checks.
+ */
+export class Workspace {
+  constructor(private readonly descriptor: WorkspaceDescriptor) {}
+
+  get root(): string {
+    return this.descriptor.root
+  }
+
+  get active(): string {
+    return this.descriptor.active
+  }
+
+  list(): WorkspaceFile[] {
+    return this.descriptor.files.slice()
+  }
+
+  /** Syntactic validation: bare filename, allowed extension, inside root. */
+  private confine(relPath: string): string {
+    if (typeof relPath !== 'string' || relPath.length === 0) {
+      throw new PathError('path must be a non-empty string')
+    }
+    if (relPath.includes('\0')) {
+      throw new PathError('path contains a null byte')
+    }
+    if (path.isAbsolute(relPath)) {
+      throw new PathError('absolute paths are not allowed')
+    }
+    // A bare filename is the only accepted shape: no separators, no dot-segments.
+    if (relPath !== path.basename(relPath)) {
+      throw new PathError('only files directly inside the workspace are allowed')
+    }
+    if (relPath === '.' || relPath === '..') {
+      throw new PathError('path must name a file')
+    }
+    const ext = path.extname(relPath).toLowerCase()
+    if (!(DOC_EXTENSIONS as readonly string[]).includes(ext)) {
+      throw new PathError(`unsupported file type: ${ext || '(none)'}`)
+    }
+
+    const abs = path.resolve(this.root, relPath)
+    const rel = path.relative(this.root, abs)
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new PathError('path escapes the workspace root')
+    }
+    return abs
+  }
+
+  /** Syntactic validation plus symlink resolution against the real root. */
+  private async confineReal(relPath: string): Promise<string> {
+    const abs = this.confine(relPath)
+    let real: string
+    try {
+      real = await fs.realpath(abs)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        // Not yet on disk. confine() already proved it is directly under root.
+        return abs
+      }
+      throw err
+    }
+    const realRoot = await fs.realpath(this.root)
+    const rel = path.relative(realRoot, real)
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new PathError('resolved path escapes the workspace root')
+    }
+    return abs
+  }
+
+  async read(relPath: string): Promise<DocRead> {
+    const abs = await this.confineReal(relPath)
+    const [content, stat] = await Promise.all([fs.readFile(abs, 'utf8'), fs.stat(abs)])
+    return { relPath, content, mtimeMs: stat.mtimeMs }
+  }
+
+  /**
+   * Write `content`, refusing when disk has moved since the client loaded it.
+   * `baseMtimeMs === null` means "this should be a new file".
+   */
+  async write(
+    relPath: string,
+    content: string,
+    baseMtimeMs: number | null
+  ): Promise<{ mtimeMs: number }> {
+    const abs = await this.confineReal(relPath)
+
+    let current: number | null = null
+    try {
+      current = (await fs.stat(abs)).mtimeMs
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
+
+    if (baseMtimeMs === null && current !== null) {
+      throw new ConflictError('file already exists on disk', current)
+    }
+    if (baseMtimeMs !== null && current === null) {
+      throw new ConflictError('file no longer exists on disk', 0)
+    }
+    if (baseMtimeMs !== null && current !== null && Math.abs(current - baseMtimeMs) > 1) {
+      throw new ConflictError('file changed on disk since it was loaded', current)
+    }
+
+    await fs.writeFile(abs, content, 'utf8')
+    return { mtimeMs: (await fs.stat(abs)).mtimeMs }
+  }
+}
+```
+
+> The 1ms tolerance in the mtime comparison absorbs filesystem timestamp
+> granularity differences; anything larger is a genuine external write.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `pnpm test -- cli/workspace.test.ts`
+Expected: PASS — 14 tests (9 parameterised rejections + symlink + read + 4 write cases).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add cli/workspace.ts cli/workspace.test.ts
+git commit -m "feat(cli): add workspace file access with path confinement"
+```
+
+---
+
+### Task 4: Debounced file watcher
+
+**Files:**
+
+- Create: `cli/watch.ts`, `cli/watch.test.ts`
+
+**Interfaces:**
+
+- Consumes: `WatchEvent` from `./types.js`; `DOC_EXTENSIONS` from `./resolve.js`.
+- Produces: `watchWorkspace(root, onEvent, opts?): () => void`, `WatcherFactory`, `nodeWatcherFactory`.
+
+The watcher factory is injectable so tests never depend on real `fs.watch` timing — the suite stays deterministic rather than flaky.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `cli/watch.test.ts`:
+
+```ts
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { watchWorkspace, type WatcherFactory } from './watch.js'
+import type { WatchEvent } from './types.js'
+
+type Emit = (event: string, filename: string | null) => void
+
+function stubFactory(): { factory: WatcherFactory; emit: Emit; closed: () => boolean } {
+  let emit: Emit = () => {}
+  let closed = false
+  const factory: WatcherFactory = (_root, cb) => {
+    emit = cb
+    return {
+      close: () => {
+        closed = true
+      },
+    }
+  }
+  return { factory, emit: (e, f) => emit(e, f), closed: () => closed }
+}
+
+beforeEach(() => vi.useFakeTimers())
+afterEach(() => vi.useRealTimers())
+
+describe('watchWorkspace', () => {
+  it('emits a changed event after the debounce window', () => {
+    const events: WatchEvent[] = []
+    const { factory, emit } = stubFactory()
+    watchWorkspace('/root', (e) => events.push(e), { debounceMs: 50, factory, exists: () => true })
+
+    emit('change', 'notes.md')
+    expect(events).toEqual([])
+
+    vi.advanceTimersByTime(50)
+    expect(events).toEqual([{ type: 'changed', relPath: 'notes.md' }])
+  })
+
+  it('collapses a burst of writes into one event', () => {
+    const events: WatchEvent[] = []
+    const { factory, emit } = stubFactory()
+    watchWorkspace('/root', (e) => events.push(e), { debounceMs: 50, factory, exists: () => true })
+
+    emit('change', 'notes.md')
+    vi.advanceTimersByTime(20)
+    emit('change', 'notes.md')
+    vi.advanceTimersByTime(20)
+    emit('change', 'notes.md')
+    vi.advanceTimersByTime(50)
+
+    expect(events).toEqual([{ type: 'changed', relPath: 'notes.md' }])
+  })
+
+  it('debounces each file independently', () => {
+    const events: WatchEvent[] = []
+    const { factory, emit } = stubFactory()
+    watchWorkspace('/root', (e) => events.push(e), { debounceMs: 50, factory, exists: () => true })
+
+    emit('change', 'a.md')
+    emit('change', 'b.md')
+    vi.advanceTimersByTime(50)
+
+    expect(events.map((e) => e.relPath).sort()).toEqual(['a.md', 'b.md'])
+  })
+
+  it('ignores files with unsupported extensions', () => {
+    const events: WatchEvent[] = []
+    const { factory, emit } = stubFactory()
+    watchWorkspace('/root', (e) => events.push(e), { debounceMs: 50, factory, exists: () => true })
+
+    emit('change', 'image.png')
+    emit('change', 'notes.md.swp')
+    vi.advanceTimersByTime(50)
+
+    expect(events).toEqual([])
+  })
+
+  it('ignores paths that are not bare filenames', () => {
+    const events: WatchEvent[] = []
+    const { factory, emit } = stubFactory()
+    watchWorkspace('/root', (e) => events.push(e), { debounceMs: 50, factory, exists: () => true })
+
+    emit('change', 'sub/nested.md')
+    emit('change', null)
+    vi.advanceTimersByTime(50)
+
+    expect(events).toEqual([])
+  })
+
+  it('reports a vanished file as removed', () => {
+    const events: WatchEvent[] = []
+    const { factory, emit } = stubFactory()
+    watchWorkspace('/root', (e) => events.push(e), {
+      debounceMs: 50,
+      factory,
+      exists: () => false,
+    })
+
+    emit('rename', 'gone.md')
+    vi.advanceTimersByTime(50)
+
+    expect(events).toEqual([{ type: 'removed', relPath: 'gone.md' }])
+  })
+
+  it('closes the underlying watcher and stops emitting', () => {
+    const events: WatchEvent[] = []
+    const { factory, emit, closed } = stubFactory()
+    const stop = watchWorkspace('/root', (e) => events.push(e), {
+      debounceMs: 50,
+      factory,
+      exists: () => true,
+    })
+
+    emit('change', 'notes.md')
+    stop()
+    vi.advanceTimersByTime(50)
+
+    expect(closed()).toBe(true)
+    expect(events).toEqual([])
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pnpm test -- cli/watch.test.ts`
+Expected: FAIL — cannot resolve `./watch.js`.
+
+- [ ] **Step 3: Implement `cli/watch.ts`**
+
+```ts
+import fs from 'node:fs'
+import path from 'node:path'
+import { DOC_EXTENSIONS } from './resolve.js'
+import type { WatchEvent } from './types.js'
+
+export interface RawWatcher {
+  close(): void
+}
+
+export type WatcherFactory = (
+  root: string,
+  cb: (event: string, filename: string | null) => void
+) => RawWatcher
+
+export const nodeWatcherFactory: WatcherFactory = (root, cb) =>
+  fs.watch(root, { persistent: true }, cb)
+
+export interface WatchOptions {
+  debounceMs?: number
+  factory?: WatcherFactory
+  /** Existence probe, injectable so tests stay hermetic. */
+  exists?: (absPath: string) => boolean
+}
+
+/**
+ * Watch `root` for document changes, collapsing bursts per file. Editors and
+ * agents commonly write a file several times in quick succession; without
+ * debouncing the client would reload mid-write and see truncated content.
+ */
+export function watchWorkspace(
+  root: string,
+  onEvent: (event: WatchEvent) => void,
+  options: WatchOptions = {}
+): () => void {
+  const debounceMs = options.debounceMs ?? 50
+  const factory = options.factory ?? nodeWatcherFactory
+  const exists = options.exists ?? ((abs: string) => fs.existsSync(abs))
+  const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  let stopped = false
+
+  const watcher = factory(root, (_event, filename) => {
+    if (stopped || filename === null) return
+    // fs.watch can report nested or non-document paths; only bare docs matter.
+    if (filename !== path.basename(filename)) return
+    const ext = path.extname(filename).toLowerCase()
+    if (!(DOC_EXTENSIONS as readonly string[]).includes(ext)) return
+
+    const existing = timers.get(filename)
+    if (existing !== undefined) clearTimeout(existing)
+    timers.set(
+      filename,
+      setTimeout(() => {
+        timers.delete(filename)
+        if (stopped) return
+        const present = exists(path.join(root, filename))
+        onEvent({ type: present ? 'changed' : 'removed', relPath: filename })
+      }, debounceMs)
+    )
+  })
+
+  return () => {
+    stopped = true
+    for (const timer of timers.values()) clearTimeout(timer)
+    timers.clear()
+    watcher.close()
+  }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `pnpm test -- cli/watch.test.ts`
+Expected: PASS — 7 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add cli/watch.ts cli/watch.test.ts
+git commit -m "feat(cli): add debounced workspace file watcher"
+```
+
+---
+
+### Task 5: HTTP server, JSON API, and SSE
+
+**Files:**
+
+- Create: `cli/server.ts`, `cli/server.test.ts`
+
+**Interfaces:**
+
+- Consumes: `Workspace`, `PathError`, `ConflictError` from `./workspace.js`; `WatchEvent` from `./types.js`.
+- Produces: `startServer(options: ServerOptions): Promise<ServerHandle>` where `ServerHandle = { url, origin, port, token, notify(event: WatchEvent): void, close(): Promise<void> }`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `cli/server.test.ts`:
+
+```ts
+import { afterEach, describe, expect, it } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { startServer, type ServerHandle } from './server.js'
+import { Workspace } from './workspace.js'
+
+const cleanups: Array<() => Promise<void>> = []
+
+async function harness(): Promise<{ handle: ServerHandle; root: string }> {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-server-'))
+  const root = path.join(base, 'root')
+  const dist = path.join(base, 'dist')
+  await fs.mkdir(root)
+  await fs.mkdir(path.join(dist, 'assets'), { recursive: true })
+  await fs.writeFile(path.join(root, 'notes.md'), '# notes', 'utf8')
+  await fs.writeFile(path.join(dist, 'index.html'), '<div id="root"></div>', 'utf8')
+  await fs.writeFile(path.join(dist, 'assets', 'app.js'), 'console.log(1)', 'utf8')
+
+  const workspace = new Workspace({
+    root: await fs.realpath(root),
+    files: [{ name: 'notes.md', relPath: 'notes.md' }],
+    active: 'notes.md',
+  })
+  const handle = await startServer({ workspace, distDir: dist })
+  cleanups.push(async () => {
+    await handle.close()
+    await fs.rm(base, { recursive: true, force: true })
+  })
+  return { handle, root }
+}
+
+function auth(handle: ServerHandle): Record<string, string> {
+  return { authorization: `Bearer ${handle.token}` }
+}
+
+afterEach(async () => {
+  await Promise.all(cleanups.splice(0).map((fn) => fn()))
+})
+
+describe('static serving', () => {
+  it('serves index.html at the root', async () => {
+    const { handle } = await harness()
+    const res = await fetch(handle.url)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('id="root"')
+  })
+
+  it('serves assets', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/assets/app.js`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('javascript')
+  })
+
+  it('refuses traversal out of the dist directory', async () => {
+    const { handle } = await harness()
+    // Percent-encoded so fetch does not normalise the dot-segments away before
+    // the request reaches the server.
+    const res = await fetch(`${handle.origin}/assets/%2e%2e/%2e%2e/root/notes.md`)
+    expect(res.status).toBe(400)
+  })
+})
+
+describe('API authentication', () => {
+  it('rejects a missing token with 401', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/workspace`)
+    expect(res.status).toBe(401)
+  })
+
+  it('rejects a wrong token with 401', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/workspace`, {
+      headers: { authorization: 'Bearer not-the-token' },
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it('rejects a foreign Origin with 403', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/workspace`, {
+      headers: { ...auth(handle), origin: 'https://evil.example' },
+    })
+    expect(res.status).toBe(403)
+  })
+
+  it('accepts its own Origin', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/workspace`, {
+      headers: { ...auth(handle), origin: handle.origin },
+    })
+    expect(res.status).toBe(200)
+  })
+})
+
+describe('document API', () => {
+  it('lists the workspace', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/workspace`, { headers: auth(handle) })
+    expect(await res.json()).toEqual({
+      files: [{ name: 'notes.md', relPath: 'notes.md' }],
+      active: 'notes.md',
+    })
+  })
+
+  it('reads a document', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/doc?path=notes.md`, { headers: auth(handle) })
+    const body = await res.json()
+    expect(body.content).toBe('# notes')
+    expect(body.mtimeMs).toBeGreaterThan(0)
+  })
+
+  it('rejects a traversal path with 400', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/doc?path=${encodeURIComponent('../secret.md')}`, {
+      headers: auth(handle),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('saves a document and reports the new mtime', async () => {
+    const { handle, root } = await harness()
+    const read = await (
+      await fetch(`${handle.origin}/api/doc?path=notes.md`, { headers: auth(handle) })
+    ).json()
+
+    const res = await fetch(`${handle.origin}/api/doc`, {
+      method: 'PUT',
+      headers: { ...auth(handle), 'content-type': 'application/json' },
+      body: JSON.stringify({ relPath: 'notes.md', content: 'saved!', baseMtimeMs: read.mtimeMs }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await fs.readFile(path.join(root, 'notes.md'), 'utf8')).toBe('saved!')
+  })
+
+  it('returns 409 with their content when the base mtime is stale', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/doc`, {
+      method: 'PUT',
+      headers: { ...auth(handle), 'content-type': 'application/json' },
+      body: JSON.stringify({ relPath: 'notes.md', content: 'mine', baseMtimeMs: 1 }),
+    })
+
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.theirContent).toBe('# notes')
+    expect(body.theirMtimeMs).toBeGreaterThan(0)
+  })
+})
+
+describe('events', () => {
+  it('streams a notified change over SSE', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/events`, { headers: auth(handle) })
+    expect(res.headers.get('content-type')).toContain('text/event-stream')
+
+    handle.notify({ type: 'changed', relPath: 'notes.md' })
+
+    const reader = res.body!.getReader()
+    const chunk = new TextDecoder().decode((await reader.read()).value)
+    expect(chunk).toContain('"relPath":"notes.md"')
+    await reader.cancel()
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pnpm test -- cli/server.test.ts`
+Expected: FAIL — cannot resolve `./server.js`.
+
+- [ ] **Step 3: Implement `cli/server.ts`**
+
+```ts
+import crypto from 'node:crypto'
+import fsp from 'node:fs/promises'
+import http from 'node:http'
+import path from 'node:path'
+import type { WatchEvent } from './types.js'
+import { ConflictError, PathError, type Workspace } from './workspace.js'
+
+export interface ServerOptions {
+  workspace: Workspace
+  /** Absolute path to the built app bundle. */
+  distDir: string
+  /** 0 (default) lets the OS assign an ephemeral port. */
+  port?: number
+  host?: string
+}
+
+export interface ServerHandle {
+  /** Origin plus the token query param — hand this to the browser. */
+  url: string
+  origin: string
+  port: number
+  token: string
+  notify(event: WatchEvent): void
+  close(): Promise<void>
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json; charset=utf-8',
+}
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8')
+  const bb = Buffer.from(b, 'utf8')
+  if (ab.length !== bb.length) return false
+  return crypto.timingSafeEqual(ab, bb)
+}
+
+function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body)
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  })
+  res.end(payload)
+}
+
+async function readBody(req: http.IncomingMessage, limitBytes = 8 * 1024 * 1024): Promise<string> {
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of req) {
+    const buf = chunk as Buffer
+    total += buf.length
+    if (total > limitBytes) throw new Error('request body too large')
+    chunks.push(buf)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+export async function startServer(options: ServerOptions): Promise<ServerHandle> {
+  const { workspace, distDir } = options
+  const host = options.host ?? '127.0.0.1'
+  const token = crypto.randomBytes(32).toString('hex')
+  const realDist = await fsp.realpath(distDir)
+  const clients = new Set<http.ServerResponse>()
+
+  let origin = ''
+
+  /** Same-origin requests may omit Origin; anything cross-site always sends it. */
+  function originAllowed(req: http.IncomingMessage): boolean {
+    const value = req.headers.origin
+    if (value === undefined) return true
+    return value === origin
+  }
+
+  function tokenAllowed(req: http.IncomingMessage): boolean {
+    const header = req.headers.authorization
+    if (typeof header !== 'string') return false
+    const match = /^Bearer (.+)$/.exec(header)
+    if (match === null) return false
+    return timingSafeEqualStr(match[1], token)
+  }
+
+  async function serveStatic(res: http.ServerResponse, urlPath: string): Promise<void> {
+    const relative = urlPath === '/' ? 'index.html' : decodeURIComponent(urlPath.slice(1))
+    const abs = path.resolve(realDist, relative)
+    const rel = path.relative(realDist, abs)
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      sendJson(res, 400, { error: 'invalid asset path' })
+      return
+    }
+    try {
+      const body = await fsp.readFile(abs)
+      res.writeHead(200, {
+        'content-type':
+          CONTENT_TYPES[path.extname(abs).toLowerCase()] ?? 'application/octet-stream',
+        'cache-control': 'no-store',
+      })
+      res.end(body)
+    } catch {
+      sendJson(res, 404, { error: 'not found' })
+    }
+  }
+
+  async function handleApi(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL
+  ): Promise<void> {
+    if (!originAllowed(req)) {
+      sendJson(res, 403, { error: 'origin not allowed' })
+      return
+    }
+    if (!tokenAllowed(req)) {
+      sendJson(res, 401, { error: 'missing or invalid token' })
+      return
+    }
+
+    if (url.pathname === '/api/workspace' && req.method === 'GET') {
+      sendJson(res, 200, { files: workspace.list(), active: workspace.active })
+      return
+    }
+
+    if (url.pathname === '/api/doc' && req.method === 'GET') {
+      const relPath = url.searchParams.get('path')
+      if (relPath === null) {
+        sendJson(res, 400, { error: 'missing path parameter' })
+        return
+      }
+      sendJson(res, 200, await workspace.read(relPath))
+      return
+    }
+
+    if (url.pathname === '/api/doc' && req.method === 'PUT') {
+      const raw = await readBody(req)
+      let parsed: { relPath?: unknown; content?: unknown; baseMtimeMs?: unknown }
+      try {
+        parsed = JSON.parse(raw) as typeof parsed
+      } catch {
+        sendJson(res, 400, { error: 'body must be JSON' })
+        return
+      }
+      if (typeof parsed.relPath !== 'string' || typeof parsed.content !== 'string') {
+        sendJson(res, 400, { error: 'relPath and content are required strings' })
+        return
+      }
+      const base =
+        parsed.baseMtimeMs === null || parsed.baseMtimeMs === undefined
+          ? null
+          : Number(parsed.baseMtimeMs)
+      try {
+        sendJson(res, 200, await workspace.write(parsed.relPath, parsed.content, base))
+      } catch (err) {
+        if (err instanceof ConflictError) {
+          const theirs = await workspace.read(parsed.relPath)
+          sendJson(res, 409, {
+            error: err.message,
+            theirContent: theirs.content,
+            theirMtimeMs: theirs.mtimeMs,
+          })
+          return
+        }
+        throw err
+      }
+      return
+    }
+
+    if (url.pathname === '/api/events' && req.method === 'GET') {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+      })
+      res.write(': connected\n\n')
+      clients.add(res)
+      req.on('close', () => clients.delete(res))
+      return
+    }
+
+    sendJson(res, 404, { error: 'unknown endpoint' })
+  }
+
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', `http://${host}`)
+    const done = url.pathname.startsWith('/api/')
+      ? handleApi(req, res, url)
+      : serveStatic(res, url.pathname)
+
+    done.catch((err: unknown) => {
+      if (err instanceof PathError) {
+        sendJson(res, 400, { error: err.message })
+        return
+      }
+      sendJson(res, 500, { error: err instanceof Error ? err.message : 'internal error' })
+    })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(options.port ?? 0, host, resolve)
+  })
+
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    throw new Error('server did not bind to a TCP port')
+  }
+  const port = address.port
+  origin = `http://${host}:${port}`
+
+  return {
+    origin,
+    port,
+    token,
+    url: `${origin}/?t=${token}`,
+    notify(event: WatchEvent): void {
+      const frame = `data: ${JSON.stringify(event)}\n\n`
+      for (const client of clients) client.write(frame)
+    },
+    async close(): Promise<void> {
+      for (const client of clients) client.end()
+      clients.clear()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    },
+  }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `pnpm test -- cli/server.test.ts`
+Expected: PASS — 12 tests.
+
+- [ ] **Step 5: Run the full suite, typecheck, and lint**
+
+Run: `pnpm test && pnpm typecheck && pnpm lint`
+Expected: all pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add cli/server.ts cli/server.test.ts
+git commit -m "feat(cli): add HTTP server with token auth, doc API, and SSE"
+```
+
+---
+
+### Task 6: CLI entry point
+
+**Files:**
+
+- Create: `cli/index.ts`, `cli/open.ts`
+- Modify: `README.md` (usage section only)
+
+**Interfaces:**
+
+- Consumes: everything from tasks 1-5.
+- Produces: the `better-md` executable. `openBrowser(url: string): void` from `./open.js`.
+
+- [ ] **Step 1: Implement `cli/open.ts`**
+
+```ts
+import { spawn } from 'node:child_process'
+
+/**
+ * Best-effort browser launch. Failure is never fatal — the caller always prints
+ * the URL, so the user can open it by hand.
+ */
+export function openBrowser(url: string): void {
+  const command =
+    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
+  const args = process.platform === 'win32' ? ['', url] : [url]
+  try {
+    const child = spawn(command, args, {
+      stdio: 'ignore',
+      detached: true,
+      shell: process.platform === 'win32',
+    })
+    child.on('error', () => {})
+    child.unref()
+  } catch {
+    // Ignored: the URL is printed regardless.
+  }
+}
+```
+
+- [ ] **Step 2: Implement `cli/index.ts`**
+
+```ts
+#!/usr/bin/env node
+import fsp from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parseCliArgs, UsageError } from './args.js'
+import { openBrowser } from './open.js'
+import { ResolveError, resolveWorkspace } from './resolve.js'
+import { startServer } from './server.js'
+import { watchWorkspace } from './watch.js'
+import { Workspace } from './workspace.js'
+
+/** dist-cli/index.js → repo root → dist/ */
+function findDistDir(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist')
+}
+
+async function main(): Promise<void> {
+  const options = parseCliArgs(process.argv.slice(2))
+  const descriptor = await resolveWorkspace(options)
+  const workspace = new Workspace(descriptor)
+
+  const distDir = findDistDir()
+  try {
+    await fsp.access(path.join(distDir, 'index.html'))
+  } catch {
+    throw new ResolveError(`app bundle not found at ${distDir}. Run \`pnpm build\` first.`)
+  }
+
+  let server: Awaited<ReturnType<typeof startServer>>
+  try {
+    server = await startServer({ workspace, distDir, port: options.port })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      throw new ResolveError(
+        `port ${options.port} is already in use. Omit --port to let the OS pick a free one.`
+      )
+    }
+    throw err
+  }
+
+  const stopWatching = watchWorkspace(workspace.root, (event) => server.notify(event))
+
+  process.stdout.write(`better-md serving ${workspace.root}\n`)
+  process.stdout.write(`  ${server.url}\n`)
+  process.stdout.write('  Ctrl-C to stop\n')
+
+  if (options.open) openBrowser(server.url)
+
+  let shuttingDown = false
+  const shutdown = (): void => {
+    if (shuttingDown) return
+    shuttingDown = true
+    stopWatching()
+    void server.close().then(() => process.exit(0))
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+}
+
+main().catch((err: unknown) => {
+  if (err instanceof UsageError || err instanceof ResolveError) {
+    process.stderr.write(`${err.message}\n`)
+    process.exit(1)
+  }
+  process.stderr.write(`better-md: ${err instanceof Error ? err.message : String(err)}\n`)
+  process.exit(1)
+})
+```
+
+- [ ] **Step 3: Build and verify the error paths by hand**
+
+```bash
+pnpm build && pnpm build:cli
+node dist-cli/index.js --help              # usage text, exit 1
+node dist-cli/index.js /nope/missing.md    # "no such file or directory", exit 1
+node dist-cli/index.js --plan --port abc   # port error, exit 1
+```
+
+Expected: each prints a single readable line (or the usage block) with no stack trace.
+
+- [ ] **Step 4: Verify the happy path serves real files**
+
+```bash
+mkdir -p /tmp/bmd-smoke && printf '# hello\n' > /tmp/bmd-smoke/hello.md
+node dist-cli/index.js --no-open --port 7391 /tmp/bmd-smoke > /tmp/bmd-smoke/out.txt 2>&1 &
+sleep 1
+TOKEN=$(sed -n 's|.*/?t=\([a-f0-9]*\).*|\1|p' /tmp/bmd-smoke/out.txt)
+echo "no token:"; curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7391/api/workspace
+echo "bad origin:"; curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" -H 'Origin: https://evil.example' http://127.0.0.1:7391/api/workspace
+echo "with token:"; curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7391/api/workspace
+kill %1
+```
+
+Expected: `401`, then `403`, then
+`{"files":[{"name":"hello.md","relPath":"hello.md"}],"active":"hello.md"}`.
+
+- [ ] **Step 5: Add a CLI usage section to `README.md`**
+
+Insert after the existing "Getting started" section:
+
+````markdown
+## Opening files from disk
+
+Build once, then point the CLI at a file or directory:
+
+```bash
+pnpm build                     # the CLI serves the built bundle
+node dist-cli/index.js notes.md
+```
+````
+
+- `better-md <file.md>` — open a single file
+- `better-md <directory>` — open every markdown file in a directory
+- `better-md --plan` — open Claude Code's plans from `~/.claude/plans`, newest first
+
+Edits save back to the real file with `Cmd/Ctrl+S`. If the file changes on disk
+while you have no unsaved edits, the view refreshes automatically; if you do have
+unsaved edits, a banner lets you keep yours or take theirs.
+
+````
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add cli/index.ts cli/open.ts README.md
+git commit -m "feat(cli): add better-md entry point"
+````
+
+---
+
+### Task 7: DocSource interface and LocalDocSource
+
+Introduces the abstraction with **no behavior change** — `LocalDocSource` reproduces exactly what `App.tsx` does today.
+
+**Files:**
+
+- Create: `src/lib/docSource.ts`, `src/lib/docSource.test.ts`
+- Modify: `src/types.ts`
+
+**Interfaces:**
+
+- Consumes: `FileDoc` from `../types`; samples from `./samples`.
+- Produces: `DocSource`, `DocFile`, `DocListing`, `DocRead`, `SaveResult`, `ChangeEvent`, `StatusEvent`, `SourceEvent`, `class LocalDocSource`.
+
+- [ ] **Step 1: Extend `FileDoc` in `src/types.ts`**
+
+```ts
+export interface FileDoc {
+  id: string
+  name: string
+  content: string
+  /** Path relative to the CLI workspace root, when disk-backed. */
+  relPath?: string
+}
+```
+
+- [ ] **Step 2: Write the failing test**
+
+Create `src/lib/docSource.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { LocalDocSource } from './docSource'
+
+describe('LocalDocSource', () => {
+  it('cannot save', () => {
+    expect(new LocalDocSource().canSave).toBe(false)
+  })
+
+  it('lists the sample documents and activates the README', async () => {
+    const listing = await new LocalDocSource().list()
+    expect(listing.files.map((f) => f.relPath)).toEqual(['README.md', 'notes.md', 'todo.md'])
+    expect(listing.active).toBe('README.md')
+    expect(listing.files[0].content.length).toBeGreaterThan(0)
+  })
+
+  it('reads a listed document', async () => {
+    const source = new LocalDocSource()
+    const listing = await source.list()
+    const doc = await source.read('README.md')
+    expect(doc.content).toBe(listing.files[0].content)
+    expect(doc.mtimeMs).toBeNull()
+  })
+
+  it('rejects reads of unknown documents', async () => {
+    await expect(new LocalDocSource().read('nope.md')).rejects.toThrow()
+  })
+
+  it('reports save as unsupported rather than throwing', async () => {
+    const result = await new LocalDocSource().save('README.md', 'x', null)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('error')
+  })
+
+  it('returns a no-op unsubscribe', () => {
+    const unsubscribe = new LocalDocSource().subscribe(() => {})
+    expect(() => unsubscribe()).not.toThrow()
+  })
+})
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+Run: `pnpm test -- src/lib/docSource.test.ts`
+Expected: FAIL — cannot resolve `./docSource`.
+
+- [ ] **Step 4: Implement `src/lib/docSource.ts`**
+
+```ts
+import { SAMPLE_NOTES, SAMPLE_README, SAMPLE_TODO } from './samples'
+
+export interface DocFile {
+  name: string
+  relPath: string
+  content: string
+}
+
+export interface DocRead {
+  content: string
+  /** null when the document is not backed by a file on disk. */
+  mtimeMs: number | null
+}
+
+export interface SaveOk {
+  ok: true
+  mtimeMs: number | null
+}
+
+export interface SaveConflict {
+  ok: false
+  reason: 'conflict'
+  theirContent: string
+  theirMtimeMs: number
+}
+
+export interface SaveFailed {
+  ok: false
+  reason: 'error'
+  message: string
+}
+
+export type SaveResult = SaveOk | SaveConflict | SaveFailed
+
+export interface DocListing {
+  files: DocFile[]
+  /** relPath to open first. For --plan this is the newest plan, not the first. */
+  active: string
+}
+
+export interface ChangeEvent {
+  type: 'changed' | 'removed'
+  relPath: string
+}
+
+/** Emitted when the live-update channel connects or drops. */
+export interface StatusEvent {
+  type: 'connected' | 'disconnected'
+}
+
+export type SourceEvent = ChangeEvent | StatusEvent
+
+/** Where documents come from, and whether they can go back. */
+export interface DocSource {
+  canSave: boolean
+  list(): Promise<DocListing>
+  read(relPath: string): Promise<DocRead>
+  save(relPath: string, content: string, baseMtimeMs: number | null): Promise<SaveResult>
+  /** Returns an unsubscribe function. */
+  subscribe(callback: (event: SourceEvent) => void): () => void
+}
+
+const SAMPLES: DocFile[] = [
+  { name: 'README.md', relPath: 'README.md', content: SAMPLE_README },
+  { name: 'notes.md', relPath: 'notes.md', content: SAMPLE_NOTES },
+  { name: 'todo.md', relPath: 'todo.md', content: SAMPLE_TODO },
+]
+
+/** Browser-only mode: seeded samples, in-memory, export-to-download. */
+export class LocalDocSource implements DocSource {
+  readonly canSave = false
+
+  private docs: DocFile[] = SAMPLES.map((doc) => ({ ...doc }))
+
+  async list(): Promise<DocListing> {
+    return { files: this.docs.map((doc) => ({ ...doc })), active: 'README.md' }
+  }
+
+  async read(relPath: string): Promise<DocRead> {
+    const doc = this.docs.find((d) => d.relPath === relPath)
+    if (doc === undefined) throw new Error(`unknown document: ${relPath}`)
+    return { content: doc.content, mtimeMs: null }
+  }
+
+  async save(): Promise<SaveResult> {
+    return {
+      ok: false,
+      reason: 'error',
+      message: 'This document is not backed by a file on disk. Use Export instead.',
+    }
+  }
+
+  subscribe(): () => void {
+    return () => {}
+  }
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `pnpm test -- src/lib/docSource.test.ts`
+Expected: PASS — 6 tests.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/docSource.ts src/lib/docSource.test.ts src/types.ts
+git commit -m "feat(app): add DocSource abstraction with in-memory implementation"
+```
+
+---
+
+### Task 8: ServerDocSource
+
+**Files:**
+
+- Create: `src/lib/serverDocSource.ts`, `src/lib/serverDocSource.test.ts`
+
+**Interfaces:**
+
+- Consumes: `DocSource`, `DocListing`, `DocRead`, `SaveResult`, `SourceEvent` from `./docSource`.
+- Produces: `class ServerDocSource` with `constructor(origin: string, token: string, fetchImpl?: typeof fetch)`. Emits `{type:'connected'}` on stream open and `{type:'disconnected'}` on drop, so the UI can stop claiming the view is live.
+
+SSE is consumed via `fetch` + a stream reader rather than `EventSource`, because `EventSource` cannot set an `Authorization` header — and header-only auth is what makes cross-site forgery impossible.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `src/lib/serverDocSource.test.ts`:
+
+```ts
+import { describe, expect, it, vi } from 'vitest'
+import type { SourceEvent } from './docSource'
+import { ServerDocSource } from './serverDocSource'
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+describe('ServerDocSource', () => {
+  it('can save', () => {
+    expect(new ServerDocSource('http://127.0.0.1:1', 'tok', vi.fn()).canSave).toBe(true)
+  })
+
+  it('sends the bearer token when listing', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ files: [{ name: 'a.md', relPath: 'a.md' }], active: 'a.md' })
+    )
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    await source.list()
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit]
+    expect((init.headers as Record<string, string>).authorization).toBe('Bearer tok')
+  })
+
+  it('preloads content for every listed file and preserves the active file', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/api/workspace')) {
+        return jsonResponse({
+          files: [
+            { name: 'a.md', relPath: 'a.md' },
+            { name: 'b.md', relPath: 'b.md' },
+          ],
+          // The server activates the newest plan, not the first alphabetically.
+          active: 'b.md',
+        })
+      }
+      const relPath = new URL(input).searchParams.get('path')
+      return jsonResponse({ relPath, content: `body of ${relPath}`, mtimeMs: 100 })
+    })
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const listing = await source.list()
+
+    expect(listing.files).toEqual([
+      { name: 'a.md', relPath: 'a.md', content: 'body of a.md' },
+      { name: 'b.md', relPath: 'b.md', content: 'body of b.md' },
+    ])
+    expect(listing.active).toBe('b.md')
+  })
+
+  it('returns ok on a successful save', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ mtimeMs: 999 }))
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const result = await source.save('a.md', 'text', 100)
+
+    expect(result).toEqual({ ok: true, mtimeMs: 999 })
+  })
+
+  it('maps a 409 to a conflict result', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ theirContent: 'theirs', theirMtimeMs: 500 }, 409)
+    )
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const result = await source.save('a.md', 'mine', 100)
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'conflict',
+      theirContent: 'theirs',
+      theirMtimeMs: 500,
+    })
+  })
+
+  it('maps a 500 to an error result carrying the message', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: 'disk full' }, 500))
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const result = await source.save('a.md', 'mine', 100)
+
+    expect(result).toEqual({ ok: false, reason: 'error', message: 'disk full' })
+  })
+
+  it('maps a rejected fetch to an error result', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('network down')
+    })
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const result = await source.save('a.md', 'mine', 100)
+
+    expect(result).toEqual({ ok: false, reason: 'error', message: 'network down' })
+  })
+
+  it('parses SSE frames into change events', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(': connected\n\ndata: {"type":"changed","relPath":"a.md"}\n\n')
+        )
+        controller.close()
+      },
+    })
+    const fetchImpl = vi.fn(async () => new Response(stream, { status: 200 }))
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const seen: SourceEvent[] = []
+    const unsubscribe = source.subscribe((event) => seen.push(event))
+    await vi.waitFor(() => expect(seen.some((e) => e.type === 'changed')).toBe(true))
+    unsubscribe()
+
+    // 'connected' lands first so the UI can show a live indicator.
+    expect(seen[0]).toEqual({ type: 'connected' })
+    expect(seen.find((e) => e.type === 'changed')).toEqual({ type: 'changed', relPath: 'a.md' })
+  })
+
+  it('reports disconnection when the stream fails', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 500 }))
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const seen: SourceEvent[] = []
+    const unsubscribe = source.subscribe((event) => seen.push(event))
+    await vi.waitFor(() => expect(seen.some((e) => e.type === 'disconnected')).toBe(true))
+    unsubscribe()
+
+    expect(seen).toContainEqual({ type: 'disconnected' })
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pnpm test -- src/lib/serverDocSource.test.ts`
+Expected: FAIL — cannot resolve `./serverDocSource`.
+
+- [ ] **Step 3: Implement `src/lib/serverDocSource.ts`**
+
+```ts
+import type { DocListing, DocRead, DocSource, SaveResult, SourceEvent } from './docSource'
+
+const RECONNECT_BASE_MS = 500
+const RECONNECT_MAX_MS = 10_000
+
+/** Disk-backed source: every call carries the bearer token. */
+export class ServerDocSource implements DocSource {
+  readonly canSave = true
+
+  private readonly fetchImpl: typeof fetch
+
+  constructor(
+    private readonly origin: string,
+    private readonly token: string,
+    fetchImpl?: typeof fetch
+  ) {
+    this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis)
+  }
+
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    return { authorization: `Bearer ${this.token}`, ...extra }
+  }
+
+  private async json<T>(url: string, init?: RequestInit): Promise<T> {
+    const res = await this.fetchImpl(url, {
+      ...init,
+      headers: this.headers(init?.headers as Record<string, string>),
+    })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `request failed with ${res.status}`)
+    }
+    return (await res.json()) as T
+  }
+
+  async list(): Promise<DocListing> {
+    const listing = await this.json<{
+      files: Array<{ name: string; relPath: string }>
+      active: string
+    }>(`${this.origin}/api/workspace`)
+    const files = await Promise.all(
+      listing.files.map(async (file) => ({
+        name: file.name,
+        relPath: file.relPath,
+        content: (await this.read(file.relPath)).content,
+      }))
+    )
+    return { files, active: listing.active }
+  }
+
+  async read(relPath: string): Promise<DocRead> {
+    const doc = await this.json<{ content: string; mtimeMs: number }>(
+      `${this.origin}/api/doc?path=${encodeURIComponent(relPath)}`
+    )
+    return { content: doc.content, mtimeMs: doc.mtimeMs }
+  }
+
+  async save(relPath: string, content: string, baseMtimeMs: number | null): Promise<SaveResult> {
+    try {
+      const res = await this.fetchImpl(`${this.origin}/api/doc`, {
+        method: 'PUT',
+        headers: this.headers({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ relPath, content, baseMtimeMs }),
+      })
+      if (res.status === 409) {
+        const body = (await res.json()) as { theirContent: string; theirMtimeMs: number }
+        return {
+          ok: false,
+          reason: 'conflict',
+          theirContent: body.theirContent,
+          theirMtimeMs: body.theirMtimeMs,
+        }
+      }
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        return { ok: false, reason: 'error', message: body.error ?? `save failed (${res.status})` }
+      }
+      const body = (await res.json()) as { mtimeMs: number }
+      return { ok: true, mtimeMs: body.mtimeMs }
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'error',
+        message: err instanceof Error ? err.message : 'save failed',
+      }
+    }
+  }
+
+  /**
+   * Consume the SSE stream with fetch so the Authorization header can be set —
+   * EventSource cannot send custom headers.
+   */
+  subscribe(callback: (event: SourceEvent) => void): () => void {
+    let stopped = false
+    let attempt = 0
+    let controller: AbortController | null = null
+
+    const run = async (): Promise<void> => {
+      while (!stopped) {
+        controller = new AbortController()
+        try {
+          const res = await this.fetchImpl(`${this.origin}/api/events`, {
+            headers: this.headers(),
+            signal: controller.signal,
+          })
+          if (!res.ok || res.body === null) throw new Error(`events failed (${res.status})`)
+          attempt = 0
+          callback({ type: 'connected' })
+          const reader = res.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ''
+          while (!stopped) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const frames = buffer.split('\n\n')
+            buffer = frames.pop() ?? ''
+            for (const frame of frames) {
+              for (const line of frame.split('\n')) {
+                if (!line.startsWith('data:')) continue
+                try {
+                  callback(JSON.parse(line.slice(5).trim()) as ChangeEvent)
+                } catch {
+                  // Ignore malformed frames rather than tearing down the stream.
+                }
+              }
+            }
+          }
+        } catch {
+          // Fall through to the backoff below.
+        }
+        if (stopped) return
+        callback({ type: 'disconnected' })
+        attempt += 1
+        const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS)
+        await new Promise((resolve) => setTimeout(resolve, delay))
+      }
+    }
+
+    void run()
+
+    return () => {
+      stopped = true
+      controller?.abort()
+    }
+  }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `pnpm test -- src/lib/serverDocSource.test.ts`
+Expected: PASS — 9 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/serverDocSource.ts src/lib/serverDocSource.test.ts
+git commit -m "feat(app): add ServerDocSource backed by the CLI API"
+```
+
+---
+
+### Task 9: Source detection and boot wiring
+
+**Files:**
+
+- Create: `src/lib/detectSource.ts`, `src/lib/detectSource.test.ts`
+
+**Interfaces:**
+
+- Consumes: `LocalDocSource` from `./docSource`; `ServerDocSource` from `./serverDocSource`.
+- Produces: `detectSource(origin: string, search: string): DocSource`.
+
+`src/main.tsx` is deliberately **not** touched here — `App` cannot accept a `source`
+prop until Task 10, and wiring it early would leave the tree red between tasks.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `src/lib/detectSource.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { detectSource } from './detectSource'
+
+describe('detectSource', () => {
+  it('returns a saving source when a token is present', () => {
+    expect(detectSource('http://127.0.0.1:5173', '?t=abc123').canSave).toBe(true)
+  })
+
+  it('returns the local source when no token is present', () => {
+    expect(detectSource('http://127.0.0.1:5173', '').canSave).toBe(false)
+  })
+
+  it('ignores an empty token', () => {
+    expect(detectSource('http://127.0.0.1:5173', '?t=').canSave).toBe(false)
+  })
+
+  it('ignores unrelated query parameters', () => {
+    expect(detectSource('http://127.0.0.1:5173', '?theme=dark').canSave).toBe(false)
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pnpm test -- src/lib/detectSource.test.ts`
+Expected: FAIL — cannot resolve `./detectSource`.
+
+- [ ] **Step 3: Implement `src/lib/detectSource.ts`**
+
+```ts
+import { LocalDocSource, type DocSource } from './docSource'
+import { ServerDocSource } from './serverDocSource'
+
+/**
+ * Choose a document source from the boot URL. A token means the page was opened
+ * by the CLI; without one the app behaves exactly as the browser-only build.
+ */
+export function detectSource(origin: string, search: string): DocSource {
+  const token = new URLSearchParams(search).get('t')
+  if (token === null || token === '') return new LocalDocSource()
+  return new ServerDocSource(origin, token)
+}
+```
+
+- [ ] **Step 4: Run the tests and the full suite**
+
+Run: `pnpm test -- src/lib/detectSource.test.ts && pnpm typecheck && pnpm lint`
+Expected: 4 tests pass; typecheck and lint clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/detectSource.ts src/lib/detectSource.test.ts
+git commit -m "feat(app): detect the CLI token at boot and pick a document source"
+```
+
+---
+
+### Task 10: Disk-backed mode in App — loading, dirty tracking, save
+
+**Files:**
+
+- Modify: `src/types.ts`, `src/App.tsx:9-49`, `src/main.tsx`
+- Create: `src/ui/ConflictBanner.tsx`
+
+**Interfaces:**
+
+- Consumes: `DocSource`, `DocListing`, `SaveResult`, `SourceEvent` from `../lib/docSource`; `detectSource` from `./lib/detectSource`.
+- Produces: `App` accepting a required `source: DocSource` prop; `ConflictBanner` and `SaveErrorBanner` components.
+
+- [ ] **Step 1: Extend `Props` and `State` in `src/types.ts`**
+
+Add the import and fields:
+
+```ts
+import type { DocSource } from './lib/docSource'
+
+export interface Props {
+  source: DocSource
+  defaultTheme?: Theme
+  defaultLayout?: Layout
+  accentColor?: string
+  syncScroll?: boolean
+}
+
+export interface ConflictState {
+  relPath: string
+  theirContent: string
+  theirMtimeMs: number
+}
+
+export interface State {
+  files: FileDoc[]
+  activeId: string
+  md: string
+  theme: Theme
+  layout: Layout
+  focusPane: Pane
+  editingSide: Side
+  dragOver: boolean
+  /** id of the file whose name is being edited inline, or null. */
+  renamingId: string | null
+  /** True until the first list() resolves. */
+  loading: boolean
+  /** relPath → has unsaved edits. */
+  dirty: Record<string, boolean>
+  /** relPath → mtime the content was loaded at, or null for non-disk docs. */
+  baseMtimeMs: Record<string, number | null>
+  conflict: ConflictState | null
+  saving: boolean
+  saveError: string | null
+  /** False while the live-update channel is down, so the UI stops implying it is live. */
+  watching: boolean
+}
+```
+
+- [ ] **Step 2: Create `src/ui/ConflictBanner.tsx`**
+
+```tsx
+interface ConflictBannerProps {
+  fileName: string
+  onKeepMine: () => void
+  onTakeTheirs: () => void
+}
+
+export function ConflictBanner({
+  fileName,
+  onKeepMine,
+  onTakeTheirs,
+}: ConflictBannerProps): React.JSX.Element {
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-sm"
+      style={{ background: 'var(--code-bg)', borderColor: 'var(--border)' }}
+    >
+      <span>
+        <strong>{fileName}</strong> changed on disk and you have unsaved edits.
+      </span>
+      <button type="button" onClick={onKeepMine} className="underline">
+        Keep mine
+      </button>
+      <button type="button" onClick={onTakeTheirs} className="underline">
+        Take theirs
+      </button>
+    </div>
+  )
+}
+
+interface SaveErrorBannerProps {
+  message: string
+  onDismiss: () => void
+}
+
+export function SaveErrorBanner({ message, onDismiss }: SaveErrorBannerProps): React.JSX.Element {
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-sm"
+      style={{ background: 'var(--code-bg)', borderColor: 'var(--border)' }}
+    >
+      <span>Could not save: {message}</span>
+      <button type="button" onClick={onDismiss} className="underline">
+        Dismiss
+      </button>
+    </div>
+  )
+}
+```
+
+- [ ] **Step 3: Replace the constructor and mount logic in `src/App.tsx:24-49`**
+
+```tsx
+  constructor(props: Props) {
+    super(props)
+    const layout: Layout =
+      props.defaultLayout && ['studio', 'tabs', 'focus'].includes(props.defaultLayout)
+        ? props.defaultLayout
+        : 'studio'
+    this.state = {
+      files: [],
+      activeId: '',
+      md: '',
+      theme: props.defaultTheme === 'dark' ? 'dark' : 'light',
+      layout,
+      focusPane: 'edit',
+      editingSide: 'init',
+      dragOver: false,
+      renamingId: null,
+      loading: true,
+      dirty: {},
+      baseMtimeMs: {},
+      conflict: null,
+      saving: false,
+      saveError: null,
+      watching: !props.source.canSave,
+    }
+  }
+
+  private unsubscribe: (() => void) | null = null
+
+  componentDidMount(): void {
+    void this.loadFromSource()
+    document.addEventListener('keydown', this.onGlobalKey)
+    this.unsubscribe = this.props.source.subscribe(this.onExternalChange)
+    this.renderPreview()
+  }
+
+  componentWillUnmount(): void {
+    document.removeEventListener('keydown', this.onGlobalKey)
+    this.unsubscribe?.()
+  }
+
+  /** Populate files from the source. Runs once on mount. */
+  private async loadFromSource(): Promise<void> {
+    const listing = await this.props.source.list()
+    const files: FileDoc[] = listing.files.map((doc) => ({
+      id: newId(),
+      name: doc.name,
+      content: doc.content,
+      relPath: doc.relPath,
+    }))
+    if (files.length === 0) {
+      this.setState({ loading: false })
+      return
+    }
+    // Honour the source's chosen active document — for --plan that is the
+    // newest plan, which is the whole point of the flag.
+    const active = files.find((f) => f.relPath === listing.active) ?? files[0]
+    const baseMtimeMs: Record<string, number | null> = {}
+    for (const doc of listing.files) baseMtimeMs[doc.relPath] = null
+    this.setState({
+      files,
+      activeId: active.id,
+      md: active.content,
+      baseMtimeMs,
+      loading: false,
+      editingSide: 'init',
+    })
+    await this.refreshMtimes(listing.files.map((d) => d.relPath))
+  }
+
+  /** Record the mtime each document was loaded at, for the save conflict check. */
+  private async refreshMtimes(relPaths: string[]): Promise<void> {
+    if (!this.props.source.canSave) return
+    const entries = await Promise.all(
+      relPaths.map(async (relPath) => {
+        const doc = await this.props.source.read(relPath)
+        return [relPath, doc.mtimeMs] as const
+      })
+    )
+    this.setState((s) => {
+      const baseMtimeMs = { ...s.baseMtimeMs }
+      for (const [relPath, mtimeMs] of entries) baseMtimeMs[relPath] = mtimeMs
+      return { baseMtimeMs }
+    })
+  }
+```
+
+> `list()` already carries content, so `refreshMtimes` exists purely to learn the
+> mtimes. Both calls hit the same server-side read; the duplication is one extra
+> request per file at boot and keeps `DocFile` free of transport concerns.
+
+- [ ] **Step 4: Add the save path and Cmd+S handler**
+
+Add these members to the class:
+
+```tsx
+  private activeFile(): FileDoc | undefined {
+    return this.state.files.find((f) => f.id === this.state.activeId)
+  }
+
+  onGlobalKey = (e: KeyboardEvent): void => {
+    const isSave = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's'
+    if (!isSave) return
+    e.preventDefault()
+    void this.saveActive()
+  }
+
+  saveActive = async (): Promise<void> => {
+    const file = this.activeFile()
+    if (file === undefined || file.relPath === undefined) return
+    if (!this.props.source.canSave) {
+      this.setState({ saveError: 'This document is not backed by a file on disk.' })
+      return
+    }
+    const relPath = file.relPath
+    this.setState({ saving: true, saveError: null })
+    const result = await this.props.source.save(
+      relPath,
+      this.state.md,
+      this.state.baseMtimeMs[relPath] ?? null
+    )
+    if (result.ok) {
+      this.setState((s) => ({
+        saving: false,
+        dirty: { ...s.dirty, [relPath]: false },
+        baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
+      }))
+      return
+    }
+    if (result.reason === 'conflict') {
+      this.setState({
+        saving: false,
+        conflict: {
+          relPath,
+          theirContent: result.theirContent,
+          theirMtimeMs: result.theirMtimeMs,
+        },
+      })
+      return
+    }
+    this.setState({ saving: false, saveError: result.message })
+  }
+
+  dismissSaveError = (): void => this.setState({ saveError: null })
+
+  // Task 11 replaces these three with the real implementations. They are real
+  // code, not stubs to remember: dismissing a conflict without resolving it is
+  // the correct fallback behaviour until reload handling exists.
+  onExternalChange = (event: SourceEvent): void => {
+    if (event.type === 'connected') this.setState({ watching: true })
+    if (event.type === 'disconnected') this.setState({ watching: false })
+  }
+
+  resolveKeepMine = (): void => this.setState({ conflict: null })
+
+  resolveTakeTheirs = (): void => this.setState({ conflict: null })
+```
+
+- [ ] **Step 5: Mark documents dirty on edit — modify `setMd` at `src/App.tsx:75-81`**
+
+```tsx
+  setMd(md: string, side: Side): void {
+    this.setState((s) => {
+      const active = s.files.find((f) => f.id === s.activeId)
+      const dirty =
+        active?.relPath === undefined ? s.dirty : { ...s.dirty, [active.relPath]: true }
+      return {
+        md,
+        editingSide: side,
+        dirty,
+        files: s.files.map((f) => (f.id === s.activeId ? { ...f, content: md } : f)),
+      }
+    })
+  }
+```
+
+- [ ] **Step 6: Render the banners and a loading state**
+
+At the top of `render()`, before the existing markup, add a guard:
+
+```tsx
+if (this.state.loading) {
+  return (
+    <div className="grid min-h-screen place-items-center" style={{ color: 'var(--muted)' }}>
+      Loading documents…
+    </div>
+  )
+}
+```
+
+Then, immediately inside the outermost wrapper element that `render()` returns, add:
+
+```tsx
+{
+  this.state.conflict !== null && (
+    <ConflictBanner
+      fileName={this.state.conflict.relPath}
+      onKeepMine={this.resolveKeepMine}
+      onTakeTheirs={this.resolveTakeTheirs}
+    />
+  )
+}
+{
+  this.state.saveError !== null && (
+    <SaveErrorBanner message={this.state.saveError} onDismiss={this.dismissSaveError} />
+  )
+}
+{
+  this.props.source.canSave && !this.state.watching && (
+    <div
+      role="status"
+      className="border-b px-4 py-1 text-[12px]"
+      style={{ color: 'var(--muted)', borderColor: 'var(--border)' }}
+    >
+      Not watching for changes — reconnecting…
+    </div>
+  )
+}
+```
+
+Add the imports at the top of `App.tsx`:
+
+```tsx
+import type { SourceEvent } from './lib/docSource'
+import { ConflictBanner, SaveErrorBanner } from './ui/ConflictBanner'
+```
+
+- [ ] **Step 7: Wire the source in at boot — replace `src/main.tsx` entirely**
+
+```tsx
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App'
+import { detectSource } from './lib/detectSource'
+
+const container = document.getElementById('root')
+if (!container) throw new Error('Root element #root not found')
+
+const source = detectSource(window.location.origin, window.location.search)
+
+// Keep the token out of the address bar, history, and any copy-pasted URL.
+if (new URLSearchParams(window.location.search).has('t')) {
+  window.history.replaceState({}, '', window.location.pathname)
+}
+
+createRoot(container).render(
+  <React.StrictMode>
+    <App source={source} />
+  </React.StrictMode>
+)
+```
+
+- [ ] **Step 8: Verify typecheck, lint, and the full suite**
+
+Run: `pnpm typecheck && pnpm lint && pnpm test`
+Expected: all pass. If `typecheck` complains that `source` is missing on `Props`,
+re-check Step 1 — `source` must be required, not optional, and `defaultProps` must
+not list it.
+
+- [ ] **Step 9: Confirm the browser-only build still works**
+
+Run: `pnpm build && pnpm preview`, open the printed URL with no query string.
+Expected: the three sample documents load exactly as before, and Cmd+S surfaces
+"not backed by a file on disk" rather than doing nothing.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add src/App.tsx src/types.ts src/ui/ConflictBanner.tsx src/main.tsx
+git commit -m "feat(app): load documents from a source, track dirty state, save with Cmd+S"
+```
+
+---
+
+### Task 11: External change handling and conflict resolution
+
+**Files:**
+
+- Modify: `src/App.tsx`
+
+**Interfaces:**
+
+- Consumes: `ChangeEvent` from `./lib/docSource`.
+- Produces: `onExternalChange`, `resolveKeepMine`, `resolveTakeTheirs` (replacing the Task 10 stubs).
+
+- [ ] **Step 1: Implement the change handler**
+
+Replace the two stubs with:
+
+```tsx
+  onExternalChange = (event: SourceEvent): void => {
+    if (event.type === 'connected') {
+      this.setState({ watching: true })
+      return
+    }
+    if (event.type === 'disconnected') {
+      this.setState({ watching: false })
+      return
+    }
+    if (event.type === 'removed') {
+      this.setState((s) => ({
+        baseMtimeMs: { ...s.baseMtimeMs, [event.relPath]: null },
+        saveError: `${event.relPath} was deleted on disk. Saving will recreate it.`,
+      }))
+      return
+    }
+    void this.reloadFromDisk(event.relPath)
+  }
+
+  /**
+   * Refresh a document from disk. Clean documents update silently; dirty ones
+   * raise a conflict so local edits are never discarded.
+   */
+  private async reloadFromDisk(relPath: string): Promise<void> {
+    const doc = await this.props.source.read(relPath).catch(() => null)
+    if (doc === null) return
+
+    if (this.state.dirty[relPath] === true) {
+      this.setState({
+        conflict: { relPath, theirContent: doc.content, theirMtimeMs: doc.mtimeMs ?? 0 },
+      })
+      return
+    }
+
+    this.setState((s) => {
+      const files = s.files.map((f) => (f.relPath === relPath ? { ...f, content: doc.content } : f))
+      const active = files.find((f) => f.id === s.activeId)
+      const isActive = active?.relPath === relPath
+      return {
+        files,
+        md: isActive ? doc.content : s.md,
+        editingSide: isActive ? 'init' : s.editingSide,
+        baseMtimeMs: { ...s.baseMtimeMs, [relPath]: doc.mtimeMs },
+      }
+    })
+  }
+
+  /** Keep the in-editor version; adopt their mtime so the next save succeeds. */
+  resolveKeepMine = (): void => {
+    const conflict = this.state.conflict
+    if (conflict === null) return
+    this.setState((s) => ({
+      conflict: null,
+      baseMtimeMs: { ...s.baseMtimeMs, [conflict.relPath]: conflict.theirMtimeMs },
+    }))
+  }
+
+  /** Discard local edits for this document and take the on-disk version. */
+  resolveTakeTheirs = (): void => {
+    const conflict = this.state.conflict
+    if (conflict === null) return
+    this.setState((s) => {
+      const files = s.files.map((f) =>
+        f.relPath === conflict.relPath ? { ...f, content: conflict.theirContent } : f
+      )
+      const active = files.find((f) => f.id === s.activeId)
+      const isActive = active?.relPath === conflict.relPath
+      return {
+        conflict: null,
+        files,
+        md: isActive ? conflict.theirContent : s.md,
+        editingSide: isActive ? 'init' : s.editingSide,
+        dirty: { ...s.dirty, [conflict.relPath]: false },
+        baseMtimeMs: { ...s.baseMtimeMs, [conflict.relPath]: conflict.theirMtimeMs },
+      }
+    })
+  }
+```
+
+The `SourceEvent` type import added in Task 10 already covers this.
+
+- [ ] **Step 2: Show a dirty marker in both file-row variants**
+
+`renderFileRow` renders the filename twice — once for the sidebar list variant and
+once for the tab variant. Both need the marker.
+
+At `src/App.tsx:371-373` (list variant), change:
+
+```tsx
+<span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+  {f.name}
+  {this.isDirty(f) ? ' •' : ''}
+</span>
+```
+
+At `src/App.tsx:421-423` (tab variant), change:
+
+```tsx
+<span className="overflow-hidden text-ellipsis whitespace-nowrap max-w-[160px]">
+  {f.name}
+  {this.isDirty(f) ? ' •' : ''}
+</span>
+```
+
+Add the helper alongside `activeFile()`:
+
+```tsx
+  private isDirty(f: FileDoc): boolean {
+    return f.relPath !== undefined && this.state.dirty[f.relPath] === true
+  }
+```
+
+- [ ] **Step 3: Verify typecheck, lint, and the suite**
+
+Run: `pnpm typecheck && pnpm lint && pnpm test`
+Expected: all pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/App.tsx
+git commit -m "feat(app): auto-reload clean documents and resolve conflicts when dirty"
+```
+
+---
+
+### Task 12: End-to-end smoke test
+
+Proves the one thing no unit test covers: CLI → browser → Cmd+S → bytes on disk.
+
+**Files:**
+
+- Create: `playwright.config.ts`, `e2e/cli-bridge.spec.ts`
+- Modify: `package.json`, `.gitignore`
+
+**Interfaces:**
+
+- Consumes: the built CLI at `dist-cli/index.js` and the built app at `dist/`.
+- Produces: `pnpm test:e2e`.
+
+- [ ] **Step 1: Install Playwright**
+
+```bash
+pnpm add -D @playwright/test
+pnpm exec playwright install chromium
+```
+
+- [ ] **Step 2: Create `playwright.config.ts`**
+
+```ts
+import { defineConfig } from '@playwright/test'
+
+export default defineConfig({
+  testDir: './e2e',
+  timeout: 30_000,
+  fullyParallel: false,
+  retries: 0,
+  reporter: 'list',
+  use: { headless: true },
+})
+```
+
+Append to `.gitignore`:
+
+```
+test-results/
+playwright-report/
+```
+
+- [ ] **Step 3: Write the failing test**
+
+Create `e2e/cli-bridge.spec.ts`:
+
+```ts
+import { expect, test } from '@playwright/test'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+
+let cli: ChildProcessWithoutNullStreams | null = null
+let workdir = ''
+
+/** Start the CLI on a temp workspace and return the tokenised URL it prints. */
+async function startCli(): Promise<string> {
+  workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-e2e-'))
+  await fs.writeFile(path.join(workdir, 'hello.md'), '# hello\n', 'utf8')
+
+  cli = spawn('node', ['dist-cli/index.js', '--no-open', workdir], {
+    cwd: process.cwd(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('CLI did not print a URL in time')), 15_000)
+    let buffered = ''
+    cli!.stdout.on('data', (chunk: Buffer) => {
+      buffered += chunk.toString('utf8')
+      const match = /(http:\/\/127\.0\.0\.1:\d+\/\?t=[a-f0-9]+)/.exec(buffered)
+      if (match !== null) {
+        clearTimeout(timer)
+        resolve(match[1])
+      }
+    })
+    cli!.stderr.on('data', (chunk: Buffer) => {
+      clearTimeout(timer)
+      reject(new Error(`CLI failed: ${chunk.toString('utf8')}`))
+    })
+  })
+}
+
+test.afterEach(async () => {
+  cli?.kill('SIGTERM')
+  cli = null
+  if (workdir !== '') {
+    await fs.rm(workdir, { recursive: true, force: true })
+    workdir = ''
+  }
+})
+
+test('edits made in the browser save back to the file on disk', async ({ page }) => {
+  const url = await startCli()
+  await page.goto(url)
+
+  const editor = page.locator('textarea')
+  await expect(editor).toHaveValue(/# hello/)
+
+  await editor.click()
+  await editor.fill('# hello from playwright\n')
+
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
+
+  await expect
+    .poll(async () => fs.readFile(path.join(workdir, 'hello.md'), 'utf8'), { timeout: 10_000 })
+    .toContain('hello from playwright')
+})
+
+test('the token is stripped from the address bar after boot', async ({ page }) => {
+  const url = await startCli()
+  await page.goto(url)
+  await expect(page.locator('textarea')).toBeVisible()
+  expect(page.url()).not.toContain('t=')
+})
+
+test('loading without a token falls back to sample documents', async ({ page }) => {
+  const url = await startCli()
+  await page.goto(new URL(url).origin)
+  await expect(page.locator('textarea')).toBeVisible()
+
+  const before = await fs.readFile(path.join(workdir, 'hello.md'), 'utf8')
+  await page.locator('textarea').fill('should not reach disk')
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
+  await page.waitForTimeout(1_000)
+
+  expect(await fs.readFile(path.join(workdir, 'hello.md'), 'utf8')).toBe(before)
+})
+```
+
+- [ ] **Step 4: Run it to verify it fails for the right reason**
+
+Run: `pnpm build && pnpm build:cli && pnpm test:e2e`
+Expected: if any test fails, the failure must be a real assertion or wiring
+problem — not a missing build. Re-run the build first if the CLI reports a
+missing bundle.
+
+- [ ] **Step 5: Fix whatever the E2E surfaces, then confirm green**
+
+Run: `pnpm test:e2e`
+Expected: 3 passed.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add playwright.config.ts e2e package.json pnpm-lock.yaml .gitignore
+git commit -m "test(e2e): verify the CLI bridge saves browser edits to disk"
+```
+
+---
+
+### Task 13: Documentation and full verification
+
+**Files:**
+
+- Modify: `README.md`, `docs/superpowers/specs/2026-08-03-cli-bridge-design.md`
+
+- [ ] **Step 1: Document the security model in `README.md`**
+
+Extend the existing "Security note" section:
+
+```markdown
+### CLI security model
+
+The CLI runs a short-lived HTTP server on `127.0.0.1` at an ephemeral port. Because
+any page in your browser can reach a localhost port, three independent layers guard
+the file API:
+
+1. **Bearer token** — a fresh 32-byte token per run, required on every `/api/*`
+   request. It arrives via the launch URL and is stripped from the address bar
+   immediately. Custom headers cannot be forged by cross-site form or image requests.
+2. **Origin validation** — requests carrying a foreign `Origin` are refused.
+3. **Path confinement** — only bare filenames with a `.md`, `.markdown`, or `.txt`
+   extension resolving inside the workspace root are readable or writable, symlinks
+   included.
+
+Saves are guarded by an mtime check: if the file changed on disk since it was loaded,
+the write is refused and you choose which version wins.
+```
+
+- [ ] **Step 2: Mark the spec's pre-publish checklist as done**
+
+In the spec's "Open-sourcing" section, note that items 1-4 were completed on
+2026-08-03 (`.agents/skills/` untracked and purged from history, MIT LICENSE added,
+README link fixed, commit authorship rewritten), and that the repo remains private
+pending this feature.
+
+- [ ] **Step 3: Run every check**
+
+Run:
+
+```bash
+pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm build:cli && pnpm test:e2e
+```
+
+Expected: all green. Record the actual test counts in the commit message.
+
+- [ ] **Step 4: Manual acceptance against real plans**
+
+```bash
+node dist-cli/index.js --plan
+```
+
+Verify: the sidebar lists your plans, the newest is active, editing marks it dirty,
+Cmd+S writes to `~/.claude/plans/`, and asking Claude to revise a plan while the page
+is clean refreshes the view automatically.
+
+> This touches real files in `~/.claude/plans`. Copy one to a scratch directory and
+> test there first if you would rather not edit a real plan.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add README.md docs/superpowers/specs/2026-08-03-cli-bridge-design.md
+git commit -m "docs: document the CLI bridge and its security model"
+```
+
+---
+
+## Post-plan: publishing
+
+Only after Task 13 passes is the repo ready to go public, per the spec's ordering
+constraint. Publishing is a separate, explicit decision:
+
+```bash
+gh repo edit Sachchaa/better-md --visibility public
+```
+
+Before running it, confirm: `git log --format='%ae' | sort -u` shows only the intended
+address, and `git log --all --name-only | grep -c '\.agents/skills'` returns 0.
