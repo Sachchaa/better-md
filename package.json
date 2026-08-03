@@ -5,15 +5,23 @@
   "type": "module",
   "description": "Markdown Dashboard — a two-way Markdown editor with live, editable preview.",
   "packageManager": "pnpm@9.12.3",
+  "bin": {
+    "better-md": "./dist-cli/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:cli": "tsc -p tsconfig.cli.json",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -23,6 +31,7 @@
   "devDependencies": {
     "@eslint/js": "^9.13.0",
     "@tailwindcss/vite": "^4.1.13",
+    "@types/node": "^22",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^4.3.4",

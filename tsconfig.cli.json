@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "outDir": "./dist-cli",
+    "rootDir": "./cli",
+    "tsBuildInfoFile": "./tsconfig.cli.tsbuildinfo",
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["cli/**/*.ts"],
+  "exclude": ["cli/**/*.test.ts"]
+}
