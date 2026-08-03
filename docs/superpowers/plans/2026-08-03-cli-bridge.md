@@ -100,7 +100,6 @@ Create `tsconfig.cli.json`:
     "rootDir": "./cli",
     "tsBuildInfoFile": "./tsconfig.cli.tsbuildinfo",
     "sourceMap": true,
-    "declaration": false,
     "skipLibCheck": true,
     "strict": true,
     "noUnusedLocals": true,
@@ -366,10 +365,34 @@ export function parseCliArgs(argv: string[]): CliOptions {
 Run: `pnpm test`
 Expected: PASS — 32 tests (22 existing + 10 new).
 
-- [ ] **Step 10: Verify the CLI build target emits and lints**
+- [ ] **Step 10: Verify the CLI build target emits, loads, and lints**
 
 Run: `pnpm build:cli && pnpm typecheck && pnpm lint`
-Expected: all exit 0, and `dist-cli/args.js` exists containing `from "./types.js"` — proving the extension convention survives emit.
+Expected: all exit 0, and `dist-cli/args.js` exists.
+
+> `composite: true` requires declaration emit — do NOT add `"declaration": false`,
+> which fails with `TS6304: Composite projects may not disable declaration emit`.
+> The `.d.ts` files land in the git-ignored `dist-cli/`, which is harmless.
+
+Then confirm the emitted ESM actually loads under Node:
+
+```bash
+node --input-type=module -e "
+  const m = await import('./dist-cli/args.js')
+  console.log(typeof m.parseCliArgs, m.parseCliArgs(['a.md']).target)
+"
+```
+
+Expected: `function a.md`.
+
+> **Scope note.** This step proves three things: Vitest resolves `.js` specifiers to
+> `.ts` sources for the `cli` project, `tsc` emits Node ESM successfully, and the
+> emitted module loads. It does **not** prove that a relative `.js` specifier survives
+> emit, because every relative import in Task 1's sources is `import type`, which
+> TypeScript always erases. The first value-level relative import in `cli/` appears in
+> Task 3 (`workspace.ts` imports `DOC_EXTENSIONS` from `./resolve.js`), and Task 3's
+> Step 4 carries the check that closes this gap. Do not add an otherwise-unused value
+> import here just to satisfy a grep.
 
 - [ ] **Step 11: Add `dist-cli` to `.gitignore` and commit**
 
@@ -888,6 +911,23 @@ export class Workspace {
 
 Run: `pnpm test -- cli/workspace.test.ts`
 Expected: PASS — 14 tests (9 parameterised rejections + symlink + read + 4 write cases).
+
+Then close the emit-survival gap Task 1 deferred. `workspace.ts` contains the first
+**value-level** relative import in `cli/` (`import { DOC_EXTENSIONS } from './resolve.js'`),
+so this is the first point at which a `.js` specifier must survive `tsc` emit:
+
+```bash
+pnpm build:cli && grep -n "from '\./resolve\.js'" dist-cli/workspace.js
+node --input-type=module -e "
+  const m = await import('./dist-cli/workspace.js')
+  console.log(typeof m.Workspace, typeof m.PathError)
+"
+```
+
+Expected: the grep prints a matching line (double or single quotes both fine — adjust the
+pattern if `tsc` emits double quotes), and the node command prints `function function`.
+A resolution failure here means the `.js`-extension convention is broken for emitted
+output and must be fixed before Task 5 depends on it.
 
 - [ ] **Step 5: Commit**
 
