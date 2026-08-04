@@ -338,7 +338,16 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     async close(): Promise<void> {
       for (const client of clients) client.end()
       clients.clear()
-      await new Promise<void>((resolve) => server.close(() => resolve()))
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+      // server.close() alone stops accepting new connections but WAITS for
+      // existing ones to finish on their own — a client that sent headers with
+      // no body, or an aborted SSE stream, can leave close() pending for the
+      // platform's keep-alive timeout (measured at 3s in Task 5). Ctrl-C wires
+      // straight to close(), so an unbounded wait here reads to the user as the
+      // CLI hanging the terminal. closeAllConnections() forcibly destroys any
+      // remaining sockets right after close() has registered its callback.
+      server.closeAllConnections()
+      await closed
     },
   }
 }

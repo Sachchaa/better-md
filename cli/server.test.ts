@@ -236,6 +236,28 @@ describe('document API', () => {
   })
 })
 
+describe('shutdown', () => {
+  // Regression guard: server.close() alone waits on lingering connections, so a
+  // half-sent request or an aborted SSE stream left it pending for seconds. The
+  // CLI wires SIGINT to close(), so that reads to a user as Ctrl-C hanging.
+  it('closes promptly with a half-sent request in flight', async () => {
+    const { handle } = await harness()
+
+    // Headers sent, body promised but never delivered — the connection lingers.
+    const socket = net.connect(handle.port, '127.0.0.1')
+    await new Promise<void>((resolve) => socket.on('connect', () => resolve()))
+    socket.write('PUT /api/doc HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 999\r\n\r\n{')
+
+    const started = performance.now()
+    await handle.close()
+    const elapsed = performance.now() - started
+
+    // Generous bound: the failure mode was seconds, not milliseconds.
+    expect(elapsed).toBeLessThan(1000)
+    socket.destroy()
+  })
+})
+
 describe('malformed request targets', () => {
   /**
    * `fetch` cannot send an unparseable target — its own URL parser rejects it
