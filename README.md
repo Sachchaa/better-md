@@ -33,6 +33,23 @@ pnpm lint         # ESLint
 pnpm format       # Prettier (write)
 ```
 
+## Opening files from disk
+
+Build once, then point the CLI at a file or directory:
+
+```bash
+pnpm build                     # the CLI serves the built bundle
+node dist-cli/index.js notes.md
+```
+
+- `better-md <file.md>` — open a single file
+- `better-md <directory>` — open every markdown file in a directory
+- `better-md --plan` — open Claude Code's plans from `~/.claude/plans`, newest first
+
+Edits save back to the real file with `Cmd/Ctrl+S`. If the file changes on disk while you
+have no unsaved edits, the view refreshes automatically; if you do have unsaved edits, a
+banner lets you keep yours or take theirs.
+
 ## Project structure
 
 ```
