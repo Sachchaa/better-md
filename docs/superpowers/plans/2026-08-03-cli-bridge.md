@@ -217,7 +217,7 @@ In `eslint.config.js`, change the ignores entry and append a Node block as the l
 In `scripts`, add:
 
 ```json
-    "build:cli": "tsc -p tsconfig.cli.json",
+    "build:cli": "tsc -p tsconfig.cli.json && node -e \"require('fs').chmodSync('dist-cli/index.js', 0o755)\"",
     "test:e2e": "playwright test",
 ```
 
@@ -2293,7 +2293,16 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     stopWatching()
-    void server.close().then(() => process.exit(0))
+    // Exit 0 either way. An unhandled rejection here would print a stack trace on
+    // Ctrl-C, which is exactly what this CLI's error contract forbids.
+    void server
+      .close()
+      .catch((err: unknown) => {
+        process.stderr.write(
+          `better-md: shutdown error: ${err instanceof Error ? err.message : String(err)}\n`
+        )
+      })
+      .finally(() => process.exit(0))
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
@@ -2335,6 +2344,20 @@ kill %1
 
 Expected: `401`, then `403`, then
 `{"files":[{"name":"hello.md","relPath":"hello.md"}],"active":"hello.md"}`.
+
+- [ ] **Step 4b: Confirm the declared `bin` target is actually executable**
+
+`package.json` declares `"bin": {"better-md": "./dist-cli/index.js"}`, but `tsc` emits
+mode `644`, so a user who `pnpm link`s or installs globally and runs the bare `better-md`
+command gets `EACCES` — the shebang is correct but the file cannot be executed. The
+`build:cli` script now chmods it via a Node one-liner (portable; plain `chmod` would fail
+on Windows).
+
+```bash
+pnpm build:cli
+ls -l dist-cli/index.js          # expect -rwxr-xr-x
+./dist-cli/index.js --help       # must run WITHOUT an explicit `node` prefix
+```
 
 - [ ] **Step 5: Add a CLI usage section to `README.md`**
 
