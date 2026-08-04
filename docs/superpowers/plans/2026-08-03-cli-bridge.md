@@ -1298,7 +1298,16 @@ describe('watchWorkspace', () => {
     })
 
     emit('change', 'notes.md')
+
+    // Assert the timer is actually cancelled, not merely muted. Dropping
+    // clearTimeout from stop() would leave this pending timeout to fire, hit the
+    // `stopped` guard and emit nothing — so the events assertion below would
+    // still pass while a real timer kept the Node event loop alive after
+    // Ctrl-C. Only the timer count can distinguish those two states.
+    expect(vi.getTimerCount()).toBe(1)
     stop()
+    expect(vi.getTimerCount()).toBe(0)
+
     vi.advanceTimersByTime(50)
 
     expect(closed()).toBe(true)
@@ -1329,8 +1338,17 @@ export type WatcherFactory = (
   cb: (event: string, filename: string | null) => void
 ) => RawWatcher
 
-export const nodeWatcherFactory: WatcherFactory = (root, cb) =>
-  fs.watch(root, { persistent: true }, cb)
+export const nodeWatcherFactory: WatcherFactory = (root, cb) => {
+  const watcher = fs.watch(root, { persistent: true }, cb)
+  // FSWatcher is an EventEmitter, so an unhandled 'error' would throw and take
+  // the whole CLI down. Losing live updates is recoverable; losing the server
+  // mid-edit is not. Report and carry on serving.
+  watcher.on('error', (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`better-md: stopped watching ${root}: ${message}\n`)
+  })
+  return watcher
+}
 
 export interface WatchOptions {
   debounceMs?: number
