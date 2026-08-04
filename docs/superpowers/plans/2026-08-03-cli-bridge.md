@@ -2338,7 +2338,9 @@ Expected: `401`, then `403`, then
 
 - [ ] **Step 5: Add a CLI usage section to `README.md`**
 
-Insert after the existing "Getting started" section:
+Insert the following after the existing "Getting started" section. The outer fence uses
+tildes so the inner triple-backtick block cannot terminate it early — do not convert it
+to backticks.
 
 ````markdown
 ## Opening files from disk
@@ -2349,16 +2351,14 @@ Build once, then point the CLI at a file or directory:
 pnpm build                     # the CLI serves the built bundle
 node dist-cli/index.js notes.md
 ```
-````
 
 - `better-md <file.md>` — open a single file
 - `better-md <directory>` — open every markdown file in a directory
 - `better-md --plan` — open Claude Code's plans from `~/.claude/plans`, newest first
 
-Edits save back to the real file with `Cmd/Ctrl+S`. If the file changes on disk
-while you have no unsaved edits, the view refreshes automatically; if you do have
-unsaved edits, a banner lets you keep yours or take theirs.
-
+Edits save back to the real file with `Cmd/Ctrl+S`. If the file changes on disk while you
+have no unsaved edits, the view refreshes automatically; if you do have unsaved edits, a
+banner lets you keep yours or take theirs.
 ````
 
 - [ ] **Step 6: Commit**
@@ -2366,7 +2366,7 @@ unsaved edits, a banner lets you keep yours or take theirs.
 ```bash
 git add cli/index.ts cli/open.ts README.md
 git commit -m "feat(cli): add better-md entry point"
-````
+```
 
 ---
 
