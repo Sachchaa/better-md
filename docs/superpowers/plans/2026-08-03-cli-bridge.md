@@ -1440,6 +1440,7 @@ Create `cli/server.test.ts`:
 ```ts
 import { afterEach, describe, expect, it } from 'vitest'
 import fs from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { startServer, type ServerHandle } from './server.js'
@@ -1675,6 +1676,46 @@ describe('document API', () => {
   })
 })
 
+describe('malformed request targets', () => {
+  /**
+   * `fetch` cannot send an unparseable target — its own URL parser rejects it
+   * first — so this needs a raw socket. Worth the awkwardness: before the guard,
+   * `new URL(req.url)` threw synchronously inside the http listener, which
+   * `done.catch` never sees, so the CLI died with an uncaughtException. Nothing
+   * in the fetch-based suite could reach that.
+   */
+  function rawRequest(port: number, target: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`)
+      })
+      let data = ''
+      socket.setTimeout(5000, () => {
+        socket.destroy()
+        reject(new Error(`no response for ${target}`))
+      })
+      socket.on('data', (chunk: Buffer) => {
+        data += chunk.toString('utf8')
+      })
+      socket.on('end', () => resolve(data))
+      socket.on('error', reject)
+    })
+  }
+
+  it.each([
+    ['bracketed host', '//[::1'],
+    ['bare scheme', 'https://['],
+  ])('answers 400 for a %s target and keeps serving', async (_label, target) => {
+    const { handle } = await harness()
+
+    expect(await rawRequest(handle.port, target)).toContain('400')
+
+    // The real regression: the process must still be alive and serving.
+    const after = await fetch(`${handle.origin}/`)
+    expect(after.status).toBe(200)
+  })
+})
+
 describe('error handling', () => {
   // Workspace.write lets fs.writeFile errors through raw, and a raw errno message
   // embeds the absolute path. The 500 body must never carry it.
@@ -1683,6 +1724,8 @@ describe('error handling', () => {
     const target = path.join(root, 'notes.md')
     const mtimeMs = (await fs.stat(target)).mtimeMs
     await fs.chmod(target, 0o444)
+    // Registered, not trailing: a failed assertion below must not skip the restore.
+    cleanups.push(() => fs.chmod(target, 0o644))
 
     const res = await fetch(`${handle.origin}/api/doc`, {
       method: 'PUT',
@@ -1694,10 +1737,12 @@ describe('error handling', () => {
     const text = await res.text()
     expect(text).not.toContain(root)
     expect(text).not.toContain(os.tmpdir())
-    // The operator still gets the detail, just not the client.
-    expect(handle === undefined).toBe(false)
 
-    await fs.chmod(target, 0o644)
+    // The operator DOES get the detail — that asymmetry is the point, and it is
+    // the only assertion that proves the detail was not simply discarded.
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain('EACCES')
+    expect(logs[0]).toContain(target)
   })
 })
 
@@ -2017,6 +2062,15 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       : serveStatic(res, url.pathname)
 
     done.catch((err: unknown) => {
+      // Classify first so the operator still learns about an unexpected failure
+      // even when the response is already partly on the wire and only res.end()
+      // is possible below.
+      const isExpected =
+        err instanceof BadRequestError || err instanceof PathError || err instanceof NotFoundError
+      if (!isExpected) {
+        log(`unhandled request error: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       // Never write headers twice, whatever the failure was.
       if (res.headersSent) {
         res.end()
@@ -2036,10 +2090,9 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         sendJson(res, 404, { error: err.message })
         return
       }
-      // Unexpected: log the detail for the operator, but never return it. Raw
-      // errno messages embed absolute paths (Workspace.write lets EACCES through
-      // from fs.writeFile), which would disclose where the workspace lives.
-      log(`unhandled request error: ${err instanceof Error ? err.message : String(err)}`)
+      // Already logged above. Never return the detail: raw errno messages embed
+      // absolute paths (Workspace.write lets EACCES through from fs.writeFile),
+      // which would disclose where the workspace lives.
       sendJson(res, 500, { error: 'internal server error' })
     })
   })
@@ -2077,9 +2130,10 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- cli/server.test.ts`
-Expected: PASS — **20 tests**, composed as: static serving 5 (index, assets, traversal,
+Expected: PASS — **22 tests**, composed as: static serving 5 (index, assets, traversal,
 malformed escape, symlink-out-of-dist) + API authentication 4 + document API 9 (list, read,
-traversal path, save, 409, 404, and 3 `it.each` rows) + error handling 1 + events 1.
+traversal path, save, 409, 404, and 3 `it.each` rows) + malformed request targets 2 (`it.each`
+rows, raw socket) + error handling 1 + events 1.
 
 Verify by enumerating names, not arithmetic. If your run reports a different total, report the
 discrepancy and which case did not register — do not adjust the count or a test to match. An
