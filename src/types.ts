@@ -46,7 +46,6 @@ export interface State {
   /** relPath → mtime the content was loaded at, or null for non-disk docs. */
   baseMtimeMs: Record<string, number | null>
   conflict: ConflictState | null
-  saving: boolean
   saveError: string | null
   /** False while the live-update channel is down, so the UI stops implying it is live. */
   watching: boolean

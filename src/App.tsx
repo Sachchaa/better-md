@@ -4,6 +4,7 @@ import { newId } from './lib/id'
 import { resolveFileName } from './lib/filename'
 import { SEG_ON, SEG_OFF, TB_BTN, LABEL } from './ui/classes'
 import type { SourceEvent } from './lib/docSource'
+import { decideTakeTheirs, isOwnEcho } from './lib/conflictResolution'
 import { flushSync } from 'react-dom'
 import { ConflictBanner, SaveErrorBanner } from './ui/ConflictBanner'
 import type { FileDoc, Layout, Props, Side, State } from './types'
@@ -44,7 +45,6 @@ export default class App extends React.Component<Props, State> {
       dirty: {},
       baseMtimeMs: {},
       conflict: null,
-      saving: false,
       saveError: null,
       watching: !props.source.canSave,
     }
@@ -123,6 +123,10 @@ export default class App extends React.Component<Props, State> {
   }
 
   private isDirty(f: FileDoc): boolean {
+    // Only meaningful when a save can actually clear it. LocalDocSource's samples
+    // carry relPath values, so without this gate every edited sample keeps a
+    // permanent bullet that nothing in the browser-only app can ever remove.
+    if (!this.diskBacked()) return false
     return f.relPath !== undefined && this.state.dirty[f.relPath] === true
   }
 
@@ -141,9 +145,9 @@ export default class App extends React.Component<Props, State> {
     // trigger it, and once conflict resolution lands, taking that stale
     // "theirs" over a newer buffer is real data loss.
     //
-    // An instance field rather than state: state.saving only takes effect once
-    // React flushes it, and the very next keydown task can run before that
-    // happens. This field is set synchronously, so a rescuing Cmd+S fired a
+    // An instance field rather than state: state.saving only took effect once
+    // React flushed it, and the very next keydown task could run before that
+    // happened. This field is set synchronously, so a rescuing Cmd+S fired a
     // moment later is guaranteed to see it.
     if (this.saveInFlight) return
 
@@ -169,10 +173,14 @@ export default class App extends React.Component<Props, State> {
     }
 
     const relPath = file.relPath
-    this.saveInFlight = true
     const sent = this.state.md
-    this.setState({ saving: true, saveError: null })
+    this.setState({ saveError: null })
     try {
+      // Set only once inside the try, cleared in the finally below: if
+      // anything between here and the request throws, the finally still runs
+      // and releases the guard, so a single failure can never wedge saves for
+      // the rest of the session.
+      this.saveInFlight = true
       const result = await this.props.source.save(
         relPath,
         sent,
@@ -190,10 +198,10 @@ export default class App extends React.Component<Props, State> {
           // this save is in flight (nothing prevents that — saveInFlight only
           // guards concurrent saves) would otherwise compare a DIFFERENT
           // document's buffer against `sent`, near-guaranteeing a mismatch and
-          // leaving a genuinely-saved document stuck showing dirty forever.
+          // leaving a genuinely-saved document showing dirty until the user
+          // switches back to it and saves again.
           const current = s.files.find((f) => f.relPath === relPath)?.content
           return {
-            saving: false,
             dirty: current === sent ? { ...s.dirty, [relPath]: false } : s.dirty,
             baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
             // A successful write settles any conflict on THIS document. Guarded by
@@ -205,7 +213,6 @@ export default class App extends React.Component<Props, State> {
       }
       if (result.reason === 'conflict') {
         this.setState({
-          saving: false,
           conflict: {
             relPath,
             theirContent: result.theirContent,
@@ -214,7 +221,7 @@ export default class App extends React.Component<Props, State> {
         })
         return
       }
-      this.setState({ saving: false, saveError: result.message })
+      this.setState({ saveError: result.message })
     } finally {
       this.saveInFlight = false
     }
@@ -229,15 +236,35 @@ export default class App extends React.Component<Props, State> {
     // ...) return` — only `switch` does. With ifs, the final line below still
     // sees `event` as possibly StatusEvent and `event.relPath` fails to compile.
     switch (event.type) {
-      case 'connected':
+      case 'connected': {
+        // A change landing while the stream was down produces no event (there
+        // is nothing to notify), so on reconnect the UI would otherwise resume
+        // claiming to be live while quietly showing stale content. Gated on
+        // having ACTUALLY been disconnected: 'connected' also fires on the very
+        // first connection, concurrently with loadFromSource's initial
+        // baseMtimeMs seeding — resyncing unconditionally here would race that
+        // seed with reads issued before it lands.
+        const wasDisconnected = this.state.watching === false && this.state.loading === false
         this.setState({ watching: true })
+        if (wasDisconnected) {
+          for (const file of this.state.files) {
+            if (file.relPath !== undefined) void this.reloadFromDisk(file.relPath)
+          }
+        }
         return
+      }
       case 'disconnected':
         this.setState({ watching: false })
         return
       case 'removed':
         this.setState((s) => ({
           baseMtimeMs: { ...s.baseMtimeMs, [event.relPath]: null },
+          // Mark it dirty: the buffer is now the ONLY copy. Without this there
+          // is no bullet and no unload prompt, so the last remaining copy of a
+          // file someone just deleted could be closed away silently. Matches
+          // what the 'gone' branch of resolveTakeTheirs already does for the
+          // same situation.
+          dirty: { ...s.dirty, [event.relPath]: true },
           saveError: `${event.relPath} was deleted on disk. Saving will recreate it.`,
         }))
         return
@@ -252,6 +279,14 @@ export default class App extends React.Component<Props, State> {
   private async reloadFromDisk(relPath: string): Promise<void> {
     const doc = await this.props.source.read(relPath).catch(() => null)
     if (doc === null) return
+
+    // Ignore the echo of our own write. The CLI watches the workspace and
+    // notifies on ANY change, including the one this app just made, so every
+    // successful save bounces a `changed` event straight back. Without this
+    // check, typing inside the watcher's debounce window of your own save
+    // raises a banner claiming the file "changed on disk" when nothing did —
+    // and offers a one-click "Take theirs" that discards those keystrokes.
+    if (isOwnEcho(doc.mtimeMs, this.state.baseMtimeMs[relPath])) return
 
     if (this.state.dirty[relPath] === true) {
       this.setState({
@@ -288,10 +323,12 @@ export default class App extends React.Component<Props, State> {
     const conflict = this.state.conflict
     if (conflict === null) return
 
+    const outcome = decideTakeTheirs(conflict.theirContent)
+
     // No on-disk version to take: the document was deleted. Taking "theirs"
     // here would replace the user's text with nothing, which is data loss
     // dressed up as conflict resolution. Keep the buffer and say so.
-    if (conflict.theirContent === null) {
+    if (outcome.kind === 'gone') {
       this.setState((s) => ({
         conflict: null,
         baseMtimeMs: { ...s.baseMtimeMs, [conflict.relPath]: null },
@@ -299,7 +336,7 @@ export default class App extends React.Component<Props, State> {
       }))
       return
     }
-    const theirContent = conflict.theirContent
+    const theirContent = outcome.content
 
     this.setState((s) => {
       const files = s.files.map((f) =>
