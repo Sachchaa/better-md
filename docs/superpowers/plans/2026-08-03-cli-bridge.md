@@ -1447,31 +1447,69 @@ import { Workspace } from './workspace.js'
 
 const cleanups: Array<() => Promise<void>> = []
 
-async function harness(): Promise<{ handle: ServerHandle; root: string }> {
+interface Harness {
+  handle: ServerHandle
+  root: string
+  dist: string
+  /** A file outside dist, used to prove a symlink cannot reach it. */
+  outsideSecret: string
+  /** Everything the server logged during this test. */
+  logs: string[]
+}
+
+async function harness(): Promise<Harness> {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-server-'))
   const root = path.join(base, 'root')
   const dist = path.join(base, 'dist')
+  const outsideSecret = path.join(base, 'SECRET.txt')
   await fs.mkdir(root)
   await fs.mkdir(path.join(dist, 'assets'), { recursive: true })
   await fs.writeFile(path.join(root, 'notes.md'), '# notes', 'utf8')
   await fs.writeFile(path.join(dist, 'index.html'), '<div id="root"></div>', 'utf8')
   await fs.writeFile(path.join(dist, 'assets', 'app.js'), 'console.log(1)', 'utf8')
+  await fs.writeFile(outsideSecret, 'TOP-SECRET', 'utf8')
 
   const workspace = new Workspace({
     root: await fs.realpath(root),
     files: [{ name: 'notes.md', relPath: 'notes.md' }],
     active: 'notes.md',
   })
-  const handle = await startServer({ workspace, distDir: dist })
+  // Capture the log instead of writing to stderr: it keeps the suite's output
+  // pristine AND makes "what did the operator see" assertable.
+  const logs: string[] = []
+  const handle = await startServer({
+    workspace,
+    distDir: dist,
+    log: (message) => logs.push(message),
+  })
   cleanups.push(async () => {
     await handle.close()
     await fs.rm(base, { recursive: true, force: true })
   })
-  return { handle, root }
+  return { handle, root, dist, outsideSecret, logs }
 }
 
 function auth(handle: ServerHandle): Record<string, string> {
   return { authorization: `Bearer ${handle.token}` }
+}
+
+/**
+ * `Response.json()` is `Promise<unknown>` under @types/node (no DOM lib), so a
+ * cast is required for property access under `strict`. Narrow, local shapes keep
+ * that honest rather than reaching for `any`.
+ */
+interface DocBody {
+  relPath: string
+  content: string
+  mtimeMs: number
+}
+interface ConflictBody {
+  error: string
+  theirContent: string | null
+  theirMtimeMs: number | null
+}
+async function json<T>(res: Response): Promise<T> {
+  return (await res.json()) as T
 }
 
 afterEach(async () => {
@@ -1493,12 +1531,33 @@ describe('static serving', () => {
     expect(res.headers.get('content-type')).toContain('javascript')
   })
 
+  // The obvious payload does NOT work: the WHATWG URL parser matches %2e%2e as a
+  // double-dot path segment and collapses it before any application code runs, so
+  // `/assets/%2e%2e/%2e%2e/root/notes.md` arrives as `/root/notes.md` and 404s
+  // without ever reaching the guard. Percent-encoded SEPARATORS survive the parser
+  // intact, and decodeURIComponent then turns them into a real `../../`.
   it('refuses traversal out of the dist directory', async () => {
     const { handle } = await harness()
-    // Percent-encoded so fetch does not normalise the dot-segments away before
-    // the request reaches the server.
-    const res = await fetch(`${handle.origin}/assets/%2e%2e/%2e%2e/root/notes.md`)
+    const res = await fetch(`${handle.origin}/assets/..%2f..%2froot/notes.md`)
     expect(res.status).toBe(400)
+  })
+
+  it('refuses a malformed percent-escape without logging', async () => {
+    const { handle, logs } = await harness()
+    const res = await fetch(`${handle.origin}/%zz`)
+    expect(res.status).toBe(400)
+    // This route has no auth gate, so a page could otherwise flood the terminal.
+    expect(logs).toEqual([])
+  })
+
+  it('refuses a symlink inside dist that points outside it', async () => {
+    const { handle, dist, outsideSecret } = await harness()
+    await fs.symlink(outsideSecret, path.join(dist, 'assets', 'leak.js'))
+
+    const res = await fetch(`${handle.origin}/assets/leak.js`)
+
+    expect(res.status).toBe(400)
+    expect(await res.text()).not.toContain('TOP-SECRET')
   })
 })
 
@@ -1547,7 +1606,7 @@ describe('document API', () => {
   it('reads a document', async () => {
     const { handle } = await harness()
     const res = await fetch(`${handle.origin}/api/doc?path=notes.md`, { headers: auth(handle) })
-    const body = await res.json()
+    const body = await json<DocBody>(res)
     expect(body.content).toBe('# notes')
     expect(body.mtimeMs).toBeGreaterThan(0)
   })
@@ -1562,9 +1621,9 @@ describe('document API', () => {
 
   it('saves a document and reports the new mtime', async () => {
     const { handle, root } = await harness()
-    const read = await (
+    const read = await json<DocBody>(
       await fetch(`${handle.origin}/api/doc?path=notes.md`, { headers: auth(handle) })
-    ).json()
+    )
 
     const res = await fetch(`${handle.origin}/api/doc`, {
       method: 'PUT',
@@ -1585,7 +1644,7 @@ describe('document API', () => {
     })
 
     expect(res.status).toBe(409)
-    const body = await res.json()
+    const body = await json<ConflictBody>(res)
     expect(body.theirContent).toBe('# notes')
     expect(body.theirMtimeMs).toBeGreaterThan(0)
   })
@@ -1616,6 +1675,32 @@ describe('document API', () => {
   })
 })
 
+describe('error handling', () => {
+  // Workspace.write lets fs.writeFile errors through raw, and a raw errno message
+  // embeds the absolute path. The 500 body must never carry it.
+  it('does not leak filesystem paths in a 500', async () => {
+    const { handle, root } = await harness()
+    const target = path.join(root, 'notes.md')
+    const mtimeMs = (await fs.stat(target)).mtimeMs
+    await fs.chmod(target, 0o444)
+
+    const res = await fetch(`${handle.origin}/api/doc`, {
+      method: 'PUT',
+      headers: { ...auth(handle), 'content-type': 'application/json' },
+      body: JSON.stringify({ relPath: 'notes.md', content: 'nope', baseMtimeMs: mtimeMs }),
+    })
+
+    expect(res.status).toBe(500)
+    const text = await res.text()
+    expect(text).not.toContain(root)
+    expect(text).not.toContain(os.tmpdir())
+    // The operator still gets the detail, just not the client.
+    expect(handle === undefined).toBe(false)
+
+    await fs.chmod(target, 0o644)
+  })
+})
+
 describe('events', () => {
   it('streams a notified change over SSE', async () => {
     const { handle } = await harness()
@@ -1624,10 +1709,21 @@ describe('events', () => {
 
     handle.notify({ type: 'changed', relPath: 'notes.md' })
 
+    // The preamble and the event are separate chunked frames, so a single read()
+    // deterministically sees only ': connected'. Accumulate until the event shows
+    // up, with a `done` guard so a regression fails instead of hanging.
     const reader = res.body!.getReader()
-    const chunk = new TextDecoder().decode((await reader.read()).value)
-    expect(chunk).toContain('"relPath":"notes.md"')
+    const decoder = new TextDecoder()
+    let seen = ''
+    while (!seen.includes('"relPath":"notes.md"')) {
+      const { value, done } = await reader.read()
+      if (done) break
+      seen += decoder.decode(value, { stream: true })
+    }
     await reader.cancel()
+
+    expect(seen).toContain('"relPath":"notes.md"')
+    expect(seen).toContain('"type":"changed"')
   })
 })
 ```
@@ -1654,6 +1750,11 @@ export interface ServerOptions {
   /** 0 (default) lets the OS assign an ephemeral port. */
   port?: number
   host?: string
+  /**
+   * Operator log sink. Injected so tests can assert what was logged and keep
+   * their own output pristine; defaults to stderr. Never receives the token.
+   */
+  log?: (message: string) => void
 }
 
 export interface ServerHandle {
@@ -1684,6 +1785,22 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ab, bb)
 }
 
+/** True when `candidate` is outside `dir`. Segment-wise, so '..foo.js' is fine. */
+function escapesDir(dir: string, candidate: string): boolean {
+  const rel = path.relative(dir, candidate)
+  return rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)
+}
+
+/** Client errors that a handler raises and the top-level mapper turns into 4xx. */
+export class BadRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400
+  ) {
+    super(message)
+  }
+}
+
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, {
@@ -1699,7 +1816,8 @@ async function readBody(req: http.IncomingMessage, limitBytes = 8 * 1024 * 1024)
   for await (const chunk of req) {
     const buf = chunk as Buffer
     total += buf.length
-    if (total > limitBytes) throw new Error('request body too large')
+    // 413, not 500 — an oversize body is the client's mistake, not a server fault.
+    if (total > limitBytes) throw new BadRequestError('request body too large', 413)
     chunks.push(buf)
   }
   return Buffer.concat(chunks).toString('utf8')
@@ -1708,6 +1826,7 @@ async function readBody(req: http.IncomingMessage, limitBytes = 8 * 1024 * 1024)
 export async function startServer(options: ServerOptions): Promise<ServerHandle> {
   const { workspace, distDir } = options
   const host = options.host ?? '127.0.0.1'
+  const log = options.log ?? ((message: string) => process.stderr.write(`better-md: ${message}\n`))
   const token = crypto.randomBytes(32).toString('hex')
   const realDist = await fsp.realpath(distDir)
   const clients = new Set<http.ServerResponse>()
@@ -1724,25 +1843,62 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   function tokenAllowed(req: http.IncomingMessage): boolean {
     const header = req.headers.authorization
     if (typeof header !== 'string') return false
-    const match = /^Bearer (.+)$/.exec(header)
+    // RFC 7235 makes the scheme token case-insensitive.
+    const match = /^Bearer[ ]+(.+)$/i.exec(header)
     if (match === null) return false
     return timingSafeEqualStr(match[1], token)
   }
 
   async function serveStatic(res: http.ServerResponse, urlPath: string): Promise<void> {
-    const relative = urlPath === '/' ? 'index.html' : decodeURIComponent(urlPath.slice(1))
+    let relative: string
+    if (urlPath === '/') {
+      relative = 'index.html'
+    } else {
+      try {
+        relative = decodeURIComponent(urlPath.slice(1))
+      } catch {
+        // A malformed escape like /%zz is a bad request, not a server fault.
+        // This route has no auth gate, so letting it reach the 500 handler would
+        // let any page flood the terminal the CLI is drawing in, one line per
+        // request. Answer 400 and log nothing.
+        sendJson(res, 400, { error: 'malformed asset path' })
+        return
+      }
+    }
+
     const abs = path.resolve(realDist, relative)
-    const rel = path.relative(realDist, abs)
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    // Segment-wise, so a legitimate '..foo.js' is not caught by a bare prefix test.
+    if (escapesDir(realDist, abs)) {
       sendJson(res, 400, { error: 'invalid asset path' })
       return
     }
+
+    // Lexical confinement is not enough: readFile follows symlinks, so a link
+    // inside dist/ would serve a file from anywhere. Workspace.confineReal
+    // resolves symlinks for documents; the asset layer must agree rather than
+    // being the weaker of the two.
+    let real: string
     try {
-      const body = await fsp.readFile(abs)
+      real = await fsp.realpath(abs)
+    } catch {
+      sendJson(res, 404, { error: 'not found' })
+      return
+    }
+    if (escapesDir(realDist, real)) {
+      sendJson(res, 400, { error: 'invalid asset path' })
+      return
+    }
+
+    try {
+      const body = await fsp.readFile(real)
       res.writeHead(200, {
         'content-type':
-          CONTENT_TYPES[path.extname(abs).toLowerCase()] ?? 'application/octet-stream',
+          CONTENT_TYPES[path.extname(real).toLowerCase()] ?? 'application/octet-stream',
         'cache-control': 'no-store',
+        // The bundle is ours, but these cost nothing and keep a stray asset from
+        // being sniffed into something executable.
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer',
       })
       res.end(body)
     } catch {
@@ -1844,12 +2000,32 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   }
 
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? '/', `http://${host}`)
+    // Parse defensively. This runs synchronously inside the listener, so a throw
+    // here is NOT caught by done.catch below — it becomes an uncaughtException and
+    // kills the CLI mid-session. A request target the WHATWG parser rejects (e.g.
+    // `GET //[::1`, reachable over a raw socket) did exactly that.
+    let url: URL
+    try {
+      url = new URL(req.url ?? '/', `http://${host}`)
+    } catch {
+      sendJson(res, 400, { error: 'malformed request target' })
+      return
+    }
+
     const done = url.pathname.startsWith('/api/')
       ? handleApi(req, res, url)
       : serveStatic(res, url.pathname)
 
     done.catch((err: unknown) => {
+      // Never write headers twice, whatever the failure was.
+      if (res.headersSent) {
+        res.end()
+        return
+      }
+      if (err instanceof BadRequestError) {
+        sendJson(res, err.status, { error: err.message })
+        return
+      }
       if (err instanceof PathError) {
         sendJson(res, 400, { error: err.message })
         return
@@ -1860,7 +2036,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         sendJson(res, 404, { error: err.message })
         return
       }
-      sendJson(res, 500, { error: err instanceof Error ? err.message : 'internal error' })
+      // Unexpected: log the detail for the operator, but never return it. Raw
+      // errno messages embed absolute paths (Workspace.write lets EACCES through
+      // from fs.writeFile), which would disclose where the workspace lives.
+      log(`unhandled request error: ${err instanceof Error ? err.message : String(err)}`)
+      sendJson(res, 500, { error: 'internal server error' })
     })
   })
 
@@ -1897,8 +2077,14 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- cli/server.test.ts`
-Expected: PASS — 16 tests (the three `it.each` rows for non-numeric `baseMtimeMs` count
-individually).
+Expected: PASS — **20 tests**, composed as: static serving 5 (index, assets, traversal,
+malformed escape, symlink-out-of-dist) + API authentication 4 + document API 9 (list, read,
+traversal path, save, 409, 404, and 3 `it.each` rows) + error handling 1 + events 1.
+
+Verify by enumerating names, not arithmetic. If your run reports a different total, report the
+discrepancy and which case did not register — do not adjust the count or a test to match. An
+earlier task had a controller miscount here, and a later one had two tests that could not
+exercise their target at all.
 
 - [ ] **Step 5: Run the full suite, typecheck, and lint**
 
