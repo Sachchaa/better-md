@@ -238,10 +238,13 @@ Pre-publish tasks:
 3. **Fix `README.md:4`** — it links to a private `claude.ai/design/p/<uuid>` project, which
    404s for others and exposes an internal project ID. Reword to "originally prototyped in
    Claude Design."
-4. **Decide commit authorship** — all four commits are authored `sachin.k@resvu.io`, a work
-   address on a personal project. Rewriting is trivial now (4 commits, private repo) and
-   effectively permanent after publishing. Recommendation: rewrite to a personal address
-   before going public. This is the author's call.
+4. **Decide commit authorship** — the initial commits were authored with a work email
+   address on what is a personal project. Rewriting is trivial while the repo is private
+   and effectively permanent after publishing. Recommendation: rewrite to a personal
+   address before going public. This is the author's call. (Done — the whole history now
+   carries one personal identity. Note the failure mode: with no repo-local `user.email`,
+   every new commit silently reverts to the global one, which happened twice and was
+   caught by a pre-publish audit rather than by anything automatic.)
 
 A scan found no secrets, absolute paths, or other personal references in tracked files.
 
