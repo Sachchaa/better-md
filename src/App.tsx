@@ -22,6 +22,7 @@ export default class App extends React.Component<Props, State> {
   private _lock = false
   private _pendingSel: { s: number; e: number } | null = null
   private _lastRenderedMd: string | null = null
+  private saveInFlight = false
 
   constructor(props: Props) {
     super(props)
@@ -121,6 +122,10 @@ export default class App extends React.Component<Props, State> {
     return this.state.files.find((f) => f.id === this.state.activeId)
   }
 
+  private isDirty(f: FileDoc): boolean {
+    return f.relPath !== undefined && this.state.dirty[f.relPath] === true
+  }
+
   onGlobalKey = (e: KeyboardEvent): void => {
     const isSave = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's'
     if (!isSave) return
@@ -135,7 +140,12 @@ export default class App extends React.Component<Props, State> {
     // "theirContent" IS the user's own text. Cmd+S auto-repeat is enough to
     // trigger it, and once conflict resolution lands, taking that stale
     // "theirs" over a newer buffer is real data loss.
-    if (this.state.saving) return
+    //
+    // An instance field rather than state: state.saving only takes effect once
+    // React flushes it, and the very next keydown task can run before that
+    // happens. This field is set synchronously, so a rescuing Cmd+S fired a
+    // moment later is guaranteed to see it.
+    if (this.saveInFlight) return
 
     const file = this.activeFile()
     // No file at all: still loading. Silent is right — there is nothing to say.
@@ -159,50 +169,154 @@ export default class App extends React.Component<Props, State> {
     }
 
     const relPath = file.relPath
+    this.saveInFlight = true
+    const sent = this.state.md
     this.setState({ saving: true, saveError: null })
-    const result = await this.props.source.save(
-      relPath,
-      this.state.md,
-      this.state.baseMtimeMs[relPath] ?? null
-    )
-    if (result.ok) {
-      this.setState((s) => ({
-        saving: false,
-        dirty: { ...s.dirty, [relPath]: false },
-        baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
-        // A successful write settles any conflict on THIS document. Guarded by
-        // relPath so an unresolved conflict on another document survives.
-        conflict: s.conflict?.relPath === relPath ? null : s.conflict,
-      }))
-      return
+    try {
+      const result = await this.props.source.save(
+        relPath,
+        sent,
+        this.state.baseMtimeMs[relPath] ?? null
+      )
+      if (result.ok) {
+        this.setState((s) => {
+          // Only this exact content reached disk. If THIS document's buffer
+          // moved on while the write was in flight, those newer edits are
+          // still unsaved — clearing the flag here would strand them with no
+          // dirty marker and no unload prompt.
+          //
+          // Compared against the tracked file's own content, not s.md: s.md is
+          // only the ACTIVE document's buffer, and switching documents while
+          // this save is in flight (nothing prevents that — saveInFlight only
+          // guards concurrent saves) would otherwise compare a DIFFERENT
+          // document's buffer against `sent`, near-guaranteeing a mismatch and
+          // leaving a genuinely-saved document stuck showing dirty forever.
+          const current = s.files.find((f) => f.relPath === relPath)?.content
+          return {
+            saving: false,
+            dirty: current === sent ? { ...s.dirty, [relPath]: false } : s.dirty,
+            baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
+            // A successful write settles any conflict on THIS document. Guarded by
+            // relPath so an unresolved conflict on another document survives.
+            conflict: s.conflict?.relPath === relPath ? null : s.conflict,
+          }
+        })
+        return
+      }
+      if (result.reason === 'conflict') {
+        this.setState({
+          saving: false,
+          conflict: {
+            relPath,
+            theirContent: result.theirContent,
+            theirMtimeMs: result.theirMtimeMs,
+          },
+        })
+        return
+      }
+      this.setState({ saving: false, saveError: result.message })
+    } finally {
+      this.saveInFlight = false
     }
-    if (result.reason === 'conflict') {
-      this.setState({
-        saving: false,
-        conflict: {
-          relPath,
-          theirContent: result.theirContent,
-          theirMtimeMs: result.theirMtimeMs,
-        },
-      })
-      return
-    }
-    this.setState({ saving: false, saveError: result.message })
   }
 
   dismissSaveError = (): void => this.setState({ saveError: null })
 
-  // Task 11 replaces these three with the real implementations. They are real
-  // code, not stubs to remember: dismissing a conflict without resolving it is
-  // the correct fallback behaviour until reload handling exists.
   onExternalChange = (event: SourceEvent): void => {
-    if (event.type === 'connected') this.setState({ watching: true })
-    if (event.type === 'disconnected') this.setState({ watching: false })
+    // A switch, not sequential ifs: ChangeEvent's `type` is itself a union of
+    // two literals ('changed' | 'removed'), and TS does not narrow a
+    // discriminated union down to that member via chained `if (x.type ===
+    // ...) return` — only `switch` does. With ifs, the final line below still
+    // sees `event` as possibly StatusEvent and `event.relPath` fails to compile.
+    switch (event.type) {
+      case 'connected':
+        this.setState({ watching: true })
+        return
+      case 'disconnected':
+        this.setState({ watching: false })
+        return
+      case 'removed':
+        this.setState((s) => ({
+          baseMtimeMs: { ...s.baseMtimeMs, [event.relPath]: null },
+          saveError: `${event.relPath} was deleted on disk. Saving will recreate it.`,
+        }))
+        return
+    }
+    void this.reloadFromDisk(event.relPath)
   }
 
-  resolveKeepMine = (): void => this.setState({ conflict: null })
+  /**
+   * Refresh a document from disk. Clean documents update silently; dirty ones
+   * raise a conflict so local edits are never discarded.
+   */
+  private async reloadFromDisk(relPath: string): Promise<void> {
+    const doc = await this.props.source.read(relPath).catch(() => null)
+    if (doc === null) return
 
-  resolveTakeTheirs = (): void => this.setState({ conflict: null })
+    if (this.state.dirty[relPath] === true) {
+      this.setState({
+        conflict: { relPath, theirContent: doc.content, theirMtimeMs: doc.mtimeMs },
+      })
+      return
+    }
+
+    this.setState((s) => {
+      const files = s.files.map((f) => (f.relPath === relPath ? { ...f, content: doc.content } : f))
+      const active = files.find((f) => f.id === s.activeId)
+      const isActive = active?.relPath === relPath
+      return {
+        files,
+        md: isActive ? doc.content : s.md,
+        editingSide: isActive ? 'init' : s.editingSide,
+        baseMtimeMs: { ...s.baseMtimeMs, [relPath]: doc.mtimeMs },
+      }
+    })
+  }
+
+  /** Keep the in-editor version; adopt their mtime so the next save succeeds. */
+  resolveKeepMine = (): void => {
+    const conflict = this.state.conflict
+    if (conflict === null) return
+    this.setState((s) => ({
+      conflict: null,
+      baseMtimeMs: { ...s.baseMtimeMs, [conflict.relPath]: conflict.theirMtimeMs },
+    }))
+  }
+
+  /** Discard local edits for this document and take the on-disk version. */
+  resolveTakeTheirs = (): void => {
+    const conflict = this.state.conflict
+    if (conflict === null) return
+
+    // No on-disk version to take: the document was deleted. Taking "theirs"
+    // here would replace the user's text with nothing, which is data loss
+    // dressed up as conflict resolution. Keep the buffer and say so.
+    if (conflict.theirContent === null) {
+      this.setState((s) => ({
+        conflict: null,
+        baseMtimeMs: { ...s.baseMtimeMs, [conflict.relPath]: null },
+        saveError: `${conflict.relPath} no longer exists on disk. Saving will recreate it.`,
+      }))
+      return
+    }
+    const theirContent = conflict.theirContent
+
+    this.setState((s) => {
+      const files = s.files.map((f) =>
+        f.relPath === conflict.relPath ? { ...f, content: theirContent } : f
+      )
+      const active = files.find((f) => f.id === s.activeId)
+      const isActive = active?.relPath === conflict.relPath
+      return {
+        conflict: null,
+        files,
+        md: isActive ? theirContent : s.md,
+        editingSide: isActive ? 'init' : s.editingSide,
+        dirty: { ...s.dirty, [conflict.relPath]: false },
+        baseMtimeMs: { ...s.baseMtimeMs, [conflict.relPath]: conflict.theirMtimeMs },
+      }
+    })
+  }
 
   componentDidUpdate(): void {
     if (this.state.editingSide !== 'right') {
@@ -505,8 +619,12 @@ export default class App extends React.Component<Props, State> {
     const active = f.id === this.state.activeId
     const renaming = this.state.renamingId === f.id
     // Rename and delete only ever touch in-memory state; on a disk-backed
-    // source they'd lie (see diskBacked()'s docstring), so hide them there.
-    const canManage = !this.diskBacked()
+    // source they'd lie (see diskBacked()'s docstring), so hide them there —
+    // but only for rows that ARE disk-backed. Drag-and-drop still creates
+    // in-editor documents even when the source is disk-backed, and such a row
+    // has no relPath: rename/delete on it are truthful, so hiding them would
+    // make a stray drop unsaveable AND unremovable for the rest of the session.
+    const canManage = !this.diskBacked() || f.relPath === undefined
     const dot =
       'w-[7px] h-[7px] rounded-full shrink-0 ' +
       (active ? 'bg-[var(--accent)]' : 'bg-[var(--faint)]')
@@ -539,6 +657,7 @@ export default class App extends React.Component<Props, State> {
                 <span aria-hidden="true" className={dot} />
                 <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                   {f.name}
+                  {this.isDirty(f) ? ' •' : ''}
                 </span>
               </button>
               {canManage && (
@@ -593,6 +712,7 @@ export default class App extends React.Component<Props, State> {
               <span aria-hidden="true" className={dot} />
               <span className="overflow-hidden text-ellipsis whitespace-nowrap max-w-[160px]">
                 {f.name}
+                {this.isDirty(f) ? ' •' : ''}
               </span>
             </button>
             {canManage && (
