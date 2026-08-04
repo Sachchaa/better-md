@@ -1071,7 +1071,7 @@ export class Workspace {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- cli/workspace.test.ts`
-Expected: PASS — 22 tests (9 parameterised rejections + read + NotFoundError + 2 symlink-escape
+Expected: PASS — 20 tests (9 parameterised rejections + read + NotFoundError + 2 symlink-escape
 cases + 5 write cases + 2 parameterised non-finite-base cases). Count the `it.each` rows
 individually; if your run reports fewer, find out which case did not register rather than
 adjusting this number.
