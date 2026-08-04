@@ -27,10 +27,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
-      # e2e spawns dist-cli/index.js, so both build targets are needed first.
+      # Build before testing. The unit suite passes either way — it injects its
+      # own asset fixtures rather than reading the generated manifest — but with
+      # a real bundle embedded, the test covering the `?? ASSETS` fallback
+      # exercises the populated branch instead of the placeholder one.
+      # e2e additionally spawns dist-cli/index.js, so both targets are required.
       - run: pnpm build
       - run: pnpm build:cli
+      - run: pnpm test
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
 

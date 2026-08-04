@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import http from 'node:http'
-import { ASSETS } from './assets.generated.js'
+import { ASSETS, type EmbeddedAsset } from './assets.generated.js'
 import { programName } from './programName.js'
 import type { WatchEvent } from './types.js'
 import { ConflictError, NotFoundError, PathError, WriteError, type Workspace } from './workspace.js'
@@ -15,6 +15,16 @@ export interface ServerOptions {
    * their own output pristine; defaults to stderr. Never receives the token.
    */
   log?: (message: string) => void
+  /**
+   * The editor bundle to serve. Defaults to the build-time embedded one.
+   *
+   * Injected so the unit suite needs no web build: reaching into the real
+   * manifest made these tests pass or fail based on whether `dist/` happened to
+   * exist, which is a property of the working directory rather than of the
+   * server. A fresh clone running `pnpm test` gets the placeholder manifest, and
+   * the tests silently asserted against an empty map.
+   */
+  assets?: ReadonlyMap<string, EmbeddedAsset>
 }
 
 export interface ServerHandle {
@@ -71,6 +81,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   const host = options.host ?? '127.0.0.1'
   const log =
     options.log ?? ((message: string) => process.stderr.write(`${programName()}: ${message}\n`))
+  const assets = options.assets ?? ASSETS
   const token = crypto.randomBytes(32).toString('hex')
   const clients = new Set<http.ServerResponse>()
 
@@ -119,7 +130,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       }
     }
 
-    const asset = ASSETS.get(key)
+    const asset = assets.get(key)
     if (asset === undefined) {
       sendJson(res, 404, { error: 'not found' })
       return

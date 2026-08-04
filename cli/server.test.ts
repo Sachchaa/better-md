@@ -3,11 +3,42 @@ import fs from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { ASSETS } from './assets.generated.js'
+import { ASSETS, type EmbeddedAsset } from './assets.generated.js'
 import { startServer, type ServerHandle } from './server.js'
 import { Workspace } from './workspace.js'
 
 const cleanups: Array<() => Promise<void>> = []
+
+/**
+ * A stand-in for the embedded editor bundle.
+ *
+ * Deliberately NOT the real `ASSETS`: that map is generated from `dist/`, so
+ * using it made these tests assert against whatever the working directory
+ * happened to contain — a real, empty placeholder manifest on a fresh clone or
+ * in CI, where `pnpm test` runs before `pnpm build`. The static route's job is
+ * "serve what is in the map, 404 otherwise", and this proves that without a web
+ * build in the loop. The packaged binary's real assets are covered end-to-end by
+ * scripts/smoke-binary.mjs.
+ */
+const FIXTURE_ASSETS: ReadonlyMap<string, EmbeddedAsset> = new Map([
+  [
+    'index.html',
+    {
+      contentType: 'text/html; charset=utf-8',
+      base64: Buffer.from(
+        '<!doctype html><div id="root"></div><script src="/assets/index-fixture.js"></script>',
+        'utf8'
+      ).toString('base64'),
+    },
+  ],
+  [
+    'assets/index-fixture.js',
+    {
+      contentType: 'text/javascript; charset=utf-8',
+      base64: Buffer.from('console.log("fixture bundle")', 'utf8').toString('base64'),
+    },
+  ],
+])
 
 interface Harness {
   handle: ServerHandle
@@ -16,7 +47,11 @@ interface Harness {
   logs: string[]
 }
 
-async function harness(): Promise<Harness> {
+/**
+ * @param injectAssets pass false to let the server fall back to its embedded
+ * bundle, which is what the fallback test needs and nothing else should use.
+ */
+async function harness({ injectAssets = true } = {}): Promise<Harness> {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-server-'))
   const root = path.join(base, 'root')
   await fs.mkdir(root)
@@ -33,6 +68,7 @@ async function harness(): Promise<Harness> {
   const handle = await startServer({
     workspace,
     log: (message) => logs.push(message),
+    ...(injectAssets ? { assets: FIXTURE_ASSETS } : {}),
   })
   cleanups.push(async () => {
     await handle.close()
@@ -81,9 +117,10 @@ describe('static serving', () => {
 
   it('serves an embedded script with its recorded content type', async () => {
     const { handle } = await harness()
-    // Derived from the manifest, not hardcoded: Vite hashes the filename, so a
-    // literal key here would rot on the next build.
-    const key = [...ASSETS.keys()].find((k) => k.endsWith('.js'))
+    // Derived from the manifest rather than hardcoded, so this keeps asserting
+    // "whatever .js the map holds is served with a JS content type" rather than
+    // one fixed filename.
+    const key = [...FIXTURE_ASSETS.keys()].find((k) => k.endsWith('.js'))
     expect(key).toBeDefined()
 
     const res = await fetch(`${handle.origin}/${key!}`)
@@ -110,6 +147,21 @@ describe('static serving', () => {
     // 404, not 400: there is nothing to reject, the key simply is not embedded.
     expect(res.status).toBe(404)
     expect(await res.text()).not.toContain('# notes')
+  })
+
+  it('falls back to the embedded bundle when no assets are injected', async () => {
+    // Guards the `options.assets ?? ASSETS` default. Every test above injects a
+    // fixture, so a typo in that default — an empty map, the wrong symbol — would
+    // leave the real CLI serving nothing with the whole suite still green.
+    // Asserts the wiring against whatever the manifest holds rather than against
+    // specific contents, so it works both on a fresh clone (placeholder manifest)
+    // and after a build. CI builds before testing, which is what makes the
+    // populated branch the one actually exercised there.
+    const { handle } = await harness({ injectAssets: false })
+
+    const res = await fetch(`${handle.origin}/`)
+    await res.text()
+    expect(res.status).toBe(ASSETS.has('index.html') ? 200 : 404)
   })
 
   it('refuses a malformed percent-escape without logging', async () => {
