@@ -2,6 +2,8 @@ export interface FileDoc {
   id: string
   name: string
   content: string
+  /** Path relative to the CLI workspace root, when disk-backed. */
+  relPath?: string
 }
 
 export type Theme = 'light' | 'dark'
