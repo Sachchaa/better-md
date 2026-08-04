@@ -3320,13 +3320,29 @@ export function SaveErrorBanner({ message, onDismiss }: SaveErrorBannerProps): R
   componentDidMount(): void {
     void this.loadFromSource()
     document.addEventListener('keydown', this.onGlobalKey)
+    window.addEventListener('beforeunload', this.onBeforeUnload)
     this.unsubscribe = this.props.source.subscribe(this.onExternalChange)
     this.renderPreview()
   }
 
   componentWillUnmount(): void {
     document.removeEventListener('keydown', this.onGlobalKey)
+    window.removeEventListener('beforeunload', this.onBeforeUnload)
     this.unsubscribe?.()
+  }
+
+  /**
+   * Warn before discarding unsaved edits to real files. Save is explicit by
+   * design, so without this an accidental Cmd+W silently throws away edits to
+   * something like a plan in ~/.claude/plans. Only meaningful when the source
+   * can save; the browser-only app has nothing on disk to lose.
+   */
+  onBeforeUnload = (e: BeforeUnloadEvent): void => {
+    if (!this.props.source.canSave) return
+    if (!Object.values(this.state.dirty).some(Boolean)) return
+    e.preventDefault()
+    // Legacy assignment: some browsers still require it to show the prompt.
+    e.returnValue = ''
   }
 
   /** Populate files from the source. Runs once on mount. */
@@ -3350,13 +3366,20 @@ export function SaveErrorBanner({ message, onDismiss }: SaveErrorBannerProps): R
     // (which write() would interpret as "create a new file" and reject).
     const baseMtimeMs: Record<string, number | null> = {}
     for (const doc of listing.files) baseMtimeMs[doc.relPath] = doc.mtimeMs
-    this.setState({
-      files,
-      activeId: active.id,
-      md: active.content,
-      baseMtimeMs,
-      loading: false,
-      editingSide: 'init',
+    // flushSync so a source that resolves immediately commits before the browser
+    // paints, which keeps the browser-only app rendering its samples with no
+    // visible "Loading documents…" frame. For the server source the continuation
+    // lands a macrotask later, so this is effectively a no-op there and the
+    // loading state still shows. One code path, both sources.
+    flushSync(() => {
+      this.setState({
+        files,
+        activeId: active.id,
+        md: active.content,
+        baseMtimeMs,
+        loading: false,
+        editingSide: 'init',
+      })
     })
   }
 ```
@@ -3378,12 +3401,35 @@ Add these members to the class:
   }
 
   saveActive = async (): Promise<void> => {
+    // Never two writes in flight for one document. Both would carry the same
+    // baseMtimeMs, so the first bumps the mtime and the second 409s against a
+    // change the user themselves just made — producing a conflict banner whose
+    // "theirContent" IS the user's own text. Cmd+S auto-repeat is enough to
+    // trigger it, and once conflict resolution lands, taking that stale
+    // "theirs" over a newer buffer is real data loss.
+    if (this.state.saving) return
+
     const file = this.activeFile()
-    if (file === undefined || file.relPath === undefined) return
+    // No file at all: still loading. Silent is right — there is nothing to say.
+    if (file === undefined) return
+
     if (!this.props.source.canSave) {
       this.setState({ saveError: 'This document is not backed by a file on disk.' })
       return
     }
+
+    // A document created in the editor (+ button, drag-and-drop) has no relPath,
+    // so there is nowhere on disk to put it. Say so. Returning silently here
+    // means Cmd+S does nothing at all — no write, no error, and no dirty flag,
+    // since setMd cannot track an untracked document — and the user's text is
+    // lost on reload with no indication it was ever at risk.
+    if (file.relPath === undefined) {
+      this.setState({
+        saveError: `"${file.name}" is not backed by a file on disk. Use Export to save it.`,
+      })
+      return
+    }
+
     const relPath = file.relPath
     this.setState({ saving: true, saveError: null })
     const result = await this.props.source.save(
@@ -3396,6 +3442,9 @@ Add these members to the class:
         saving: false,
         dirty: { ...s.dirty, [relPath]: false },
         baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
+        // A successful write settles any conflict on THIS document. Guarded by
+        // relPath so an unresolved conflict on another document survives.
+        conflict: s.conflict?.relPath === relPath ? null : s.conflict,
       }))
       return
     }
@@ -3446,6 +3495,38 @@ Add these members to the class:
   }
 ```
 
+- [ ] **Step 5b: Stop the file-management UI making claims the save path cannot honour**
+
+In disk-backed mode the sidebar's rename and delete act only on in-memory state, so
+each one lies:
+
+- **Rename** changes `name` but keeps `relPath`. The workspace is flat, so `name` and
+  `relPath` are the same thing for every disk document — after a rename the sidebar
+  shows `renamed.md` while Cmd+S writes `alpha.md`, and the conflict banner names a
+  file that does not exist.
+- **Delete** removes the row without touching disk, so the document reappears on
+  reload. Worse, deleting the last one substitutes an `untitled.md` with no `relPath`
+  — an unsaveable document.
+
+Add one guard and use it to suppress both actions when the source is disk-backed:
+
+```tsx
+  /** True when file-management actions would only affect in-memory state. */
+  private diskBacked(): boolean {
+    return this.props.source.canSave
+  }
+```
+
+In `renderFileRow`, render the rename (`✎`) and delete (`×`) buttons only when
+`!this.diskBacked()`, and make `onDoubleClick={() => this.startRename(f.id)}` conditional
+the same way. Leave `addFile` and drag-and-drop import in place — those create
+in-editor documents, which `saveActive` now reports as unsaveable rather than dropping
+silently.
+
+> Renaming and deleting files on disk is a real feature, not a bug fix. It needs its
+> own API endpoints and its own conflict story, so it is deliberately out of scope
+> here; the guard exists so the UI cannot promise it.
+
 - [ ] **Step 6: Render the banners and a loading state**
 
 At the top of `render()`, before the existing markup, add a guard:
@@ -3460,7 +3541,13 @@ if (this.state.loading) {
 }
 ```
 
-Then, immediately inside the outermost wrapper element that `render()` returns, add:
+Then add the banners **inside** the outermost wrapper, as the first children of the
+flex column — and change the inner full-height div from `h-screen` to `flex-1 min-h-0`.
+
+The banners are siblings above a `h-screen` child inside a `height: 100%` root, and
+`index.css` sets no `overflow: hidden`, so showing one makes the total content
+`banner + 100vh`: the body gains a scrollbar and the app's own footer is clipped —
+exactly when the user most needs the full UI to resolve a conflict.
 
 ```tsx
 {
@@ -3494,6 +3581,7 @@ Add the imports at the top of `App.tsx`:
 
 ```tsx
 import type { SourceEvent } from './lib/docSource'
+import { flushSync } from 'react-dom'
 import { ConflictBanner, SaveErrorBanner } from './ui/ConflictBanner'
 ```
 
