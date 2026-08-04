@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets you smoke-test a published release's assets on demand, which is the
+  # case that matters after a release rather than before one.
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag whose published binaries should be smoke-tested (e.g. v0.1.0)'
+        required: false
+        type: string
+
+jobs:
+  checks:
+    name: lint, typecheck, unit, e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      # e2e spawns dist-cli/index.js, so both build targets are needed first.
+      - run: pnpm build
+      - run: pnpm build:cli
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+
+  # The gap this workflow exists to close: the Linux binaries are cross-compiled
+  # on a macOS host, so nothing had ever executed them. These runners are native,
+  # so each architecture tests its own build.
+  smoke-built:
+    name: smoke (built on ${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: linux-x64
+          - runner: ubuntu-24.04-arm
+            label: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the editor and the CLI
+        run: |
+          pnpm build
+          pnpm build:cli
+
+      # No --all: build only this runner's own target, so the binary under test
+      # was produced for the machine executing it.
+      - name: Build the binary for this host
+        run: pnpm binaries
+
+      - name: Smoke-test it
+        run: node scripts/smoke-binary.mjs "release/better-md-${{ matrix.label }}"
+
+      - name: Prove the binary is self-contained
+        run: |
+          # Delete the build outputs it could have fallen back to, then run it
+          # again from elsewhere. If the editor still serves, the assets really
+          # are embedded rather than read off disk.
+          rm -rf dist dist-cli
+          node scripts/smoke-binary.mjs "release/better-md-${{ matrix.label }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: better-md-${{ matrix.label }}
+          path: release/better-md-${{ matrix.label }}
+          retention-days: 7
+
+  # Verifies what users actually download, rather than a fresh local build.
+  smoke-released:
+    name: smoke (released ${{ matrix.label }})
+    if: inputs.release_tag != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: linux-x64
+          - runner: ubuntu-24.04-arm
+            label: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install via the published one-liner
+        env:
+          BETTER_MD_VERSION: ${{ inputs.release_tag }}
+          BETTER_MD_INSTALL: ${{ runner.temp }}/bin
+        run: |
+          # Exercises the real installer, so a broken checksum or a missing
+          # asset fails here rather than on a user's machine.
+          curl -fsSL https://better-md.dev/install.sh | sh
+          "${{ runner.temp }}/bin/better-md" --help
+
+      - name: Smoke-test the installed binary
+        run: node scripts/smoke-binary.mjs "${{ runner.temp }}/bin/better-md"
