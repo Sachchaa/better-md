@@ -1577,6 +1577,23 @@ describe('API authentication', () => {
     expect(res.status).toBe(401)
   })
 
+  // 'not-the-token' differs in LENGTH, so it short-circuits at the length check
+  // and never reaches crypto.timingSafeEqual — the comparison this gate depends on
+  // had no automated coverage at all. A same-length wrong token is the only input
+  // that exercises it.
+  it('rejects a same-length wrong token with 401', async () => {
+    const { handle } = await harness()
+    const wrong = handle.token.split('').reverse().join('')
+    expect(wrong).toHaveLength(handle.token.length)
+    expect(wrong).not.toBe(handle.token)
+
+    const res = await fetch(`${handle.origin}/api/workspace`, {
+      headers: { authorization: `Bearer ${wrong}` },
+    })
+
+    expect(res.status).toBe(401)
+  })
+
   it('rejects a foreign Origin with 403', async () => {
     const { handle } = await harness()
     const res = await fetch(`${handle.origin}/api/workspace`, {
@@ -2159,8 +2176,9 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- cli/server.test.ts`
-Expected: PASS — **23 tests**, composed as: static serving 5 (index, assets, traversal,
-malformed escape, symlink-out-of-dist) + API authentication 4 + document API 9 (list, read,
+Expected: PASS — **24 tests**, composed as: static serving 5 (index, assets, traversal,
+malformed escape, symlink-out-of-dist) + API authentication 5 (including a same-length wrong
+token, the only input that reaches crypto.timingSafeEqual) + document API 9 (list, read,
 traversal path, save, 409, 404, and 3 `it.each` rows) + shutdown 1 + malformed request targets 2
 (`it.each` rows, raw socket) + error handling 1 + events 1.
 
@@ -3732,6 +3750,15 @@ In the spec's "Open-sourcing" section, note that items 1-4 were completed on
 2026-08-03 (`.agents/skills/` untracked and purged from history, MIT LICENSE added,
 README link fixed, commit authorship rewritten), and that the repo remains private
 pending this feature.
+
+- [ ] **Step 2b: Add the same-length wrong-token test carried over from Task 6's review**
+
+`cli/server.test.ts`'s existing wrong-token case uses `'not-the-token'`, which differs in
+length from the real token and therefore short-circuits at `timingSafeEqualStr`'s length
+check — `crypto.timingSafeEqual` itself was never reached by any test. Add the
+`rejects a same-length wrong token with 401` case from Task 5's Step 1 block (it reverses
+the real token, so the length matches and the value does not). `cli/server.test.ts` goes
+to 24 tests.
 
 - [ ] **Step 3: Run every check**
 
