@@ -137,6 +137,20 @@ describe('API authentication', () => {
     expect(res.status).toBe(401)
   })
 
+  // 'not-the-token' above differs in LENGTH from the real 64-char hex token, so it
+  // short-circuits at timingSafeEqualStr's length check and never reaches
+  // crypto.timingSafeEqual. Reversing the real token keeps the length identical
+  // (only the value differs), so this is the only case in the suite that actually
+  // exercises the timing-safe comparison itself.
+  it('rejects a same-length wrong token with 401', async () => {
+    const { handle } = await harness()
+    const wrongToken = [...handle.token].reverse().join('')
+    const res = await fetch(`${handle.origin}/api/workspace`, {
+      headers: { authorization: `Bearer ${wrongToken}` },
+    })
+    expect(res.status).toBe(401)
+  })
+
   it('rejects a foreign Origin with 403', async () => {
     const { handle } = await harness()
     const res = await fetch(`${handle.origin}/api/workspace`, {

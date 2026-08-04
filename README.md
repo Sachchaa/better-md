@@ -78,3 +78,20 @@ User markdown is rendered into the editable preview via `innerHTML` and can be
 **imported from arbitrary `.md` files** (drag-and-drop). `src/lib/markdown.ts`
 therefore escapes all interpolated text/attributes and blocks `javascript:`,
 `vbscript:` and non-image `data:` URLs. See `markdown.test.ts` for the XSS cases.
+
+### CLI security model
+
+The CLI runs a short-lived HTTP server on `127.0.0.1` at an ephemeral port. Because
+any page in your browser can reach a localhost port, three independent layers guard
+the file API:
+
+1. **Bearer token** — a fresh 32-byte token per run, required on every `/api/*`
+   request. It arrives via the launch URL and is stripped from the address bar
+   immediately. Custom headers cannot be forged by cross-site form or image requests.
+2. **Origin validation** — requests carrying a foreign `Origin` are refused.
+3. **Path confinement** — only bare filenames with a `.md`, `.markdown`, or `.txt`
+   extension resolving inside the workspace root are readable or writable, symlinks
+   included.
+
+Saves are guarded by an mtime check: if the file changed on disk since it was loaded,
+the write is refused and you choose which version wins.

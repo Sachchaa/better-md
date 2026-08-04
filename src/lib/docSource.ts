@@ -62,7 +62,18 @@ export interface StatusEvent {
   type: 'connected' | 'disconnected'
 }
 
-export type SourceEvent = ChangeEvent | StatusEvent
+/**
+ * Emitted once, in place of 'disconnected', when the live-update channel is
+ * rejected with 401. The token is minted per CLI run and never persisted, so
+ * this means the CLI that issued it is gone — a restart mints a fresh one —
+ * and no amount of retrying can succeed. Distinguishing it from an ordinary
+ * drop lets the UI say so instead of implying it is still trying to recover.
+ */
+export interface AuthExpiredEvent {
+  type: 'auth-expired'
+}
+
+export type SourceEvent = ChangeEvent | StatusEvent | AuthExpiredEvent
 
 /** Where documents come from, and whether they can go back. */
 export interface DocSource {

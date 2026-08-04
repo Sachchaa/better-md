@@ -107,11 +107,20 @@ export class ServerDocSource implements DocSource {
     const run = async (): Promise<void> => {
       while (!stopped) {
         controller = new AbortController()
+        // Set when the response itself said 401, as opposed to a network
+        // failure or any other status — the one case where retrying is
+        // guaranteed never to succeed, so it must not fall into the generic
+        // catch below and get the same treatment as a transient drop.
+        let authExpired = false
         try {
           const res = await this.fetchImpl(`${this.origin}/api/events`, {
             headers: this.headers(),
             signal: controller.signal,
           })
+          if (res.status === 401) {
+            authExpired = true
+            throw new Error('events failed (401)')
+          }
           if (!res.ok || res.body === null) throw new Error(`events failed (${res.status})`)
           attempt = 0
           callback({ type: 'connected' })
@@ -139,6 +148,22 @@ export class ServerDocSource implements DocSource {
           // Fall through to the backoff below.
         }
         if (stopped) return
+
+        if (authExpired) {
+          // Terminal: the token is minted per CLI run and never persisted, so
+          // a 401 here means the CLI that issued it is gone, not that the
+          // network hiccuped. No amount of retrying can ever succeed — the
+          // only fix is reopening the URL the CLI printed for its current
+          // run. Inside a try for the same reason as the 'disconnected'
+          // callback below: a broken subscriber must not become an unhandled
+          // rejection out of the fire-and-forget `void run()`.
+          try {
+            callback({ type: 'auth-expired' })
+          } catch {
+            // A broken subscriber is not the stream's problem.
+          }
+          return
+        }
 
         // Inside a try: a subscriber callback that throws must not become an
         // unhandled rejection out of the fire-and-forget `void run()` below.

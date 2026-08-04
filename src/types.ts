@@ -49,4 +49,11 @@ export interface State {
   saveError: string | null
   /** False while the live-update channel is down, so the UI stops implying it is live. */
   watching: boolean
+  /**
+   * True once the live-update channel has been rejected with 401: the CLI that
+   * minted this session's token is gone (most likely restarted), and no retry
+   * can ever succeed. Distinct from `watching` because "not watching" alone
+   * still implies the reconnect loop is trying — this says it has given up.
+   */
+  sessionExpired: boolean
 }

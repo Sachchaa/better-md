@@ -47,6 +47,7 @@ export default class App extends React.Component<Props, State> {
       conflict: null,
       saveError: null,
       watching: !props.source.canSave,
+      sessionExpired: false,
     }
   }
 
@@ -160,6 +161,16 @@ export default class App extends React.Component<Props, State> {
       return
     }
 
+    // The 'auth-expired' banner already said this, but a save attempted anyway
+    // (banner missed, or fired mid-keystroke) must not silently round-trip a
+    // request that is guaranteed to 401 — say the same thing here instead.
+    if (this.state.sessionExpired) {
+      this.setState({
+        saveError: 'This session has expired. Reopen the URL the CLI printed to keep editing.',
+      })
+      return
+    }
+
     // A document created in the editor (+ button, drag-and-drop) has no relPath,
     // so there is nowhere on disk to put it. Say so. Returning silently here
     // means Cmd+S does nothing at all — no write, no error, and no dirty flag,
@@ -255,6 +266,13 @@ export default class App extends React.Component<Props, State> {
       }
       case 'disconnected':
         this.setState({ watching: false })
+        return
+      case 'auth-expired':
+        // Terminal: ServerDocSource has already stopped retrying, because no
+        // amount of reconnecting can succeed against a token the CLI no
+        // longer recognises. Say so before the user finds out the hard way by
+        // trying to save.
+        this.setState({ watching: false, sessionExpired: true })
         return
       case 'removed':
         this.setState((s) => ({
@@ -817,7 +835,16 @@ export default class App extends React.Component<Props, State> {
         {this.state.saveError !== null && (
           <SaveErrorBanner message={this.state.saveError} onDismiss={this.dismissSaveError} />
         )}
-        {this.props.source.canSave && !this.state.watching && (
+        {this.props.source.canSave && this.state.sessionExpired && (
+          <div
+            role="status"
+            className="border-b px-4 py-1 text-[12px]"
+            style={{ color: 'var(--muted)', borderColor: 'var(--border)' }}
+          >
+            This session has expired — reopen the URL the CLI printed to keep editing.
+          </div>
+        )}
+        {this.props.source.canSave && !this.state.watching && !this.state.sessionExpired && (
           <div
             role="status"
             className="border-b px-4 py-1 text-[12px]"

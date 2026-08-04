@@ -39,4 +39,10 @@ describe('isOwnEcho', () => {
     // real change shows the user stale content.
     expect(isOwnEcho(null, 1000)).toBe(false)
   })
+
+  it('treats a null-mtime document with no baseline as a genuine change', () => {
+    // Without the null guards this returns true (null === null) and the reload is
+    // suppressed. Nothing else in the suite distinguishes that mutation.
+    expect(isOwnEcho(null, null)).toBe(false)
+  })
 })

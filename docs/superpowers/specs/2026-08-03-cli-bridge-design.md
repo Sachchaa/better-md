@@ -180,6 +180,26 @@ Vitest for everything except the one browser test.
 The repo will be made public. Ordering matters: **publish only after the security model
 above is implemented**, because installs cannot be recalled.
 
+**Status (2026-08-03): items 1-3 below are done; item 4 needs a final pass before
+publishing.** `.agents/skills/` is untracked (`git ls-files` shows zero tracked files
+under it), the MIT `LICENSE` is added, and `README.md`'s link to the private Claude
+Design project is fixed.
+
+Commit authorship (item 4) was rewritten on `main`/`origin/main` (`git log main
+--format='%ae' | sort -u` shows only the personal address). It is **not** yet clean on
+the branch that implements this feature: roughly half of its commits were made under
+the local git config's work address, so `git log --format='%ae' | sort -u` on this
+branch currently returns two addresses, not one. Separately, three refs left over from
+earlier history rewrites — `refs/original/refs/heads/main` and tags
+`pre-rewrite-backup` / `pre-email-fix` — still point at pre-rewrite commits, including
+one that still contains the un-purged `.agents/skills/` tree (79 files, among them the
+license-less `vercel-react-best-practices` skill) and two older author addresses.
+Pushing tags or `--all` before deleting those refs would undo both the purge and the
+authorship rewrite the moment the repo goes public. The repo remains **private**
+pending completion of this security-model feature; publishing is a separate, explicit
+step, and item 4 needs a final authorship pass (this branch plus the leftover backup
+refs) as part of it, not before.
+
 Pre-publish tasks:
 
 1. **Untrack `.agents/skills/`** — 79 of 104 tracked files are vendored third-party skills

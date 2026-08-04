@@ -222,4 +222,37 @@ describe('ServerDocSource', () => {
 
     expect(seen).toContainEqual({ type: 'disconnected' })
   })
+
+  it('treats a 401 on the events stream as terminal and stops retrying', async () => {
+    // A restarted CLI mints a brand new token, so an already-open page's
+    // stream 401s forever. Unlike every other failure (5xx, network drop),
+    // retrying can never succeed here, so this must emit a distinguishable
+    // event instead of 'disconnected' and never call fetch again.
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 401 }))
+      const source = new ServerDocSource(
+        'http://127.0.0.1:1',
+        'tok',
+        fetchImpl as unknown as typeof fetch
+      )
+
+      const seen: SourceEvent[] = []
+      const unsubscribe = source.subscribe((event) => seen.push(event))
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(seen).toEqual([{ type: 'auth-expired' }])
+      // No backoff timer scheduled — a genuine drop leaves one pending (see
+      // the cancellation test above); a dead token must leave none at all.
+      expect(vi.getTimerCount()).toBe(0)
+
+      // Advancing time far past any backoff window must not produce a retry.
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+      unsubscribe()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
