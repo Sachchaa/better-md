@@ -1,34 +1,27 @@
 #!/usr/bin/env node
-import fsp from 'node:fs/promises'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { parseCliArgs, UsageError } from './args.js'
+import { ASSETS } from './assets.generated.js'
 import { openBrowser } from './open.js'
+import { programName } from './programName.js'
 import { ResolveError, resolveWorkspace } from './resolve.js'
 import { startServer } from './server.js'
 import { watchWorkspace } from './watch.js'
 import { Workspace } from './workspace.js'
-
-/** dist-cli/index.js → repo root → dist/ */
-function findDistDir(): string {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist')
-}
 
 async function main(): Promise<void> {
   const options = parseCliArgs(process.argv.slice(2))
   const descriptor = await resolveWorkspace(options)
   const workspace = new Workspace(descriptor)
 
-  const distDir = findDistDir()
-  try {
-    await fsp.access(path.join(distDir, 'index.html'))
-  } catch {
-    throw new ResolveError(`app bundle not found at ${distDir}. Run \`pnpm build\` first.`)
+  // The bundle is embedded at build time, so this can only fail if the embed step
+  // was skipped — not if a directory went missing at runtime.
+  if (!ASSETS.has('index.html')) {
+    throw new ResolveError('app bundle missing from this build. Run `pnpm build:cli`.')
   }
 
   let server: Awaited<ReturnType<typeof startServer>>
   try {
-    server = await startServer({ workspace, distDir, port: options.port })
+    server = await startServer({ workspace, port: options.port })
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
       throw new ResolveError(
@@ -40,7 +33,7 @@ async function main(): Promise<void> {
 
   const stopWatching = watchWorkspace(workspace.root, (event) => server.notify(event))
 
-  process.stdout.write(`better-md serving ${workspace.root}\n`)
+  process.stdout.write(`${programName()} serving ${workspace.root}\n`)
   process.stdout.write(`  ${server.url}\n`)
   process.stdout.write('  Ctrl-C to stop\n')
 
@@ -57,7 +50,7 @@ async function main(): Promise<void> {
       .close()
       .catch((err: unknown) => {
         process.stderr.write(
-          `better-md: shutdown error: ${err instanceof Error ? err.message : String(err)}\n`
+          `${programName()}: shutdown error: ${err instanceof Error ? err.message : String(err)}\n`
         )
       })
       .finally(() => process.exit(0))
@@ -71,6 +64,6 @@ main().catch((err: unknown) => {
     process.stderr.write(`${err.message}\n`)
     process.exit(1)
   }
-  process.stderr.write(`better-md: ${err instanceof Error ? err.message : String(err)}\n`)
+  process.stderr.write(`${programName()}: ${err instanceof Error ? err.message : String(err)}\n`)
   process.exit(1)
 })

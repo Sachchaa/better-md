@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { programName } from './programName.js'
 import { DOC_EXTENSIONS } from './resolve.js'
 import type { WatchEvent } from './types.js'
 
@@ -19,7 +20,7 @@ export const nodeWatcherFactory: WatcherFactory = (root, cb) => {
   // mid-edit is not. Report and carry on serving.
   watcher.on('error', (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`better-md: stopped watching ${root}: ${message}\n`)
+    process.stderr.write(`${programName()}: stopped watching ${root}: ${message}\n`)
   })
   return watcher
 }

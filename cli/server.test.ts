@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { ASSETS } from './assets.generated.js'
 import { startServer, type ServerHandle } from './server.js'
 import { Workspace } from './workspace.js'
 
@@ -11,9 +12,6 @@ const cleanups: Array<() => Promise<void>> = []
 interface Harness {
   handle: ServerHandle
   root: string
-  dist: string
-  /** A file outside dist, used to prove a symlink cannot reach it. */
-  outsideSecret: string
   /** Everything the server logged during this test. */
   logs: string[]
 }
@@ -21,14 +19,8 @@ interface Harness {
 async function harness(): Promise<Harness> {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-server-'))
   const root = path.join(base, 'root')
-  const dist = path.join(base, 'dist')
-  const outsideSecret = path.join(base, 'SECRET.txt')
   await fs.mkdir(root)
-  await fs.mkdir(path.join(dist, 'assets'), { recursive: true })
   await fs.writeFile(path.join(root, 'notes.md'), '# notes', 'utf8')
-  await fs.writeFile(path.join(dist, 'index.html'), '<div id="root"></div>', 'utf8')
-  await fs.writeFile(path.join(dist, 'assets', 'app.js'), 'console.log(1)', 'utf8')
-  await fs.writeFile(outsideSecret, 'TOP-SECRET', 'utf8')
 
   const workspace = new Workspace({
     root: await fs.realpath(root),
@@ -40,14 +32,13 @@ async function harness(): Promise<Harness> {
   const logs: string[] = []
   const handle = await startServer({
     workspace,
-    distDir: dist,
     log: (message) => logs.push(message),
   })
   cleanups.push(async () => {
     await handle.close()
     await fs.rm(base, { recursive: true, force: true })
   })
-  return { handle, root, dist, outsideSecret, logs }
+  return { handle, root, logs }
 }
 
 function auth(handle: ServerHandle): Record<string, string> {
@@ -78,29 +69,47 @@ afterEach(async () => {
 })
 
 describe('static serving', () => {
-  it('serves index.html at the root', async () => {
+  it('serves the embedded index.html at the root', async () => {
     const { handle } = await harness()
     const res = await fetch(handle.url)
+
     expect(res.status).toBe(200)
     expect(await res.text()).toContain('id="root"')
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
   })
 
-  it('serves assets', async () => {
+  it('serves an embedded script with its recorded content type', async () => {
     const { handle } = await harness()
-    const res = await fetch(`${handle.origin}/assets/app.js`)
+    // Derived from the manifest, not hardcoded: Vite hashes the filename, so a
+    // literal key here would rot on the next build.
+    const key = [...ASSETS.keys()].find((k) => k.endsWith('.js'))
+    expect(key).toBeDefined()
+
+    const res = await fetch(`${handle.origin}/${key!}`)
+
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('javascript')
+    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
   })
 
-  // The obvious payload does NOT work: the WHATWG URL parser matches %2e%2e as a
-  // double-dot path segment and collapses it before any application code runs, so
-  // `/assets/%2e%2e/%2e%2e/root/notes.md` arrives as `/root/notes.md` and 404s
-  // without ever reaching the guard. Percent-encoded SEPARATORS survive the parser
-  // intact, and decodeURIComponent then turns them into a real `../../`.
-  it('refuses traversal out of the dist directory', async () => {
+  // These used to be traversal and symlink-escape guards over a real dist/
+  // directory. Assets are now embedded at build time and the static route makes
+  // no filesystem call at all, so the escape is unreachable by construction
+  // rather than defended against. What is worth asserting is exactly that: an
+  // off-manifest key is a miss, not a lookup.
+  it.each([
+    ['percent-encoded separators', '/assets/..%2f..%2froot/notes.md'],
+    ['dot segments', '/assets/../../root/notes.md'],
+    ['an absolute-looking path', '//etc/passwd'],
+    ['a workspace document by name', '/notes.md'],
+  ])('does not serve %s', async (_label, target) => {
     const { handle } = await harness()
-    const res = await fetch(`${handle.origin}/assets/..%2f..%2froot/notes.md`)
-    expect(res.status).toBe(400)
+    const res = await fetch(`${handle.origin}${target}`)
+
+    // 404, not 400: there is nothing to reject, the key simply is not embedded.
+    expect(res.status).toBe(404)
+    expect(await res.text()).not.toContain('# notes')
   })
 
   it('refuses a malformed percent-escape without logging', async () => {
@@ -109,16 +118,6 @@ describe('static serving', () => {
     expect(res.status).toBe(400)
     // This route has no auth gate, so a page could otherwise flood the terminal.
     expect(logs).toEqual([])
-  })
-
-  it('refuses a symlink inside dist that points outside it', async () => {
-    const { handle, dist, outsideSecret } = await harness()
-    await fs.symlink(outsideSecret, path.join(dist, 'assets', 'leak.js'))
-
-    const res = await fetch(`${handle.origin}/assets/leak.js`)
-
-    expect(res.status).toBe(400)
-    expect(await res.text()).not.toContain('TOP-SECRET')
   })
 })
 

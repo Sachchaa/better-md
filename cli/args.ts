@@ -1,20 +1,27 @@
 import { parseArgs } from 'node:util'
+import { programName } from './programName.js'
 import type { CliOptions } from './types.js'
 
 /** Thrown for any bad invocation, and for --help (message is the usage text). */
 export class UsageError extends Error {}
 
-export const USAGE = `better-md — open markdown files from disk in the better-md editor
+/**
+ * Usage text, built around the name the CLI was invoked as so the two installed
+ * shims each describe themselves rather than advertising the other.
+ */
+export function usage(name: string = programName()): string {
+  return `${name} — open markdown files from disk in the better-md editor
 
 Usage:
-  better-md <file.md>        open a single file
-  better-md <directory>      open every markdown file in a directory
-  better-md --plan           open Claude Code's plans (~/.claude/plans)
+  ${name} <file.md>        open a single file
+  ${name} <directory>      open every markdown file in a directory
+  ${name} --plan           open Claude Code's plans (~/.claude/plans)
 
 Options:
   --port <n>   listen on a specific port (default: an ephemeral port)
   --no-open    print the URL instead of opening a browser
   --help       show this message`
+}
 
 function parsePort(raw: string): number {
   if (!/^\d+$/.test(raw)) {
@@ -47,7 +54,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     throw new UsageError(err instanceof Error ? err.message : String(err))
   }
 
-  if (values.help) throw new UsageError(USAGE)
+  if (values.help) throw new UsageError(usage())
 
   if (positionals.length > 1) {
     throw new UsageError(`expected at most one file or directory, got ${positionals.length}`)

@@ -38,3 +38,10 @@ pnpm-debug.log*
 
 test-results/
 playwright-report/
+
+# Generated: the browser bundle embedded into the CLI (pnpm build:cli)
+cli/assets.generated.ts
+
+# Binary build artifacts
+build/
+release/

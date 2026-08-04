@@ -1,14 +1,12 @@
 import crypto from 'node:crypto'
-import fsp from 'node:fs/promises'
 import http from 'node:http'
-import path from 'node:path'
+import { ASSETS } from './assets.generated.js'
+import { programName } from './programName.js'
 import type { WatchEvent } from './types.js'
 import { ConflictError, NotFoundError, PathError, WriteError, type Workspace } from './workspace.js'
 
 export interface ServerOptions {
   workspace: Workspace
-  /** Absolute path to the built app bundle. */
-  distDir: string
   /** 0 (default) lets the OS assign an ephemeral port. */
   port?: number
   host?: string
@@ -29,28 +27,11 @@ export interface ServerHandle {
   close(): Promise<void>
 }
 
-const CONTENT_TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff2': 'font/woff2',
-  '.map': 'application/json; charset=utf-8',
-}
-
 function timingSafeEqualStr(a: string, b: string): boolean {
   const ab = Buffer.from(a, 'utf8')
   const bb = Buffer.from(b, 'utf8')
   if (ab.length !== bb.length) return false
   return crypto.timingSafeEqual(ab, bb)
-}
-
-/** True when `candidate` is outside `dir`. Segment-wise, so '..foo.js' is fine. */
-function escapesDir(dir: string, candidate: string): boolean {
-  const rel = path.relative(dir, candidate)
-  return rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)
 }
 
 /** Client errors that a handler raises and the top-level mapper turns into 4xx. */
@@ -86,11 +67,11 @@ async function readBody(req: http.IncomingMessage, limitBytes = 8 * 1024 * 1024)
 }
 
 export async function startServer(options: ServerOptions): Promise<ServerHandle> {
-  const { workspace, distDir } = options
+  const { workspace } = options
   const host = options.host ?? '127.0.0.1'
-  const log = options.log ?? ((message: string) => process.stderr.write(`better-md: ${message}\n`))
+  const log =
+    options.log ?? ((message: string) => process.stderr.write(`${programName()}: ${message}\n`))
   const token = crypto.randomBytes(32).toString('hex')
-  const realDist = await fsp.realpath(distDir)
   const clients = new Set<http.ServerResponse>()
 
   let origin = ''
@@ -111,13 +92,23 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     return timingSafeEqualStr(match[1], token)
   }
 
-  async function serveStatic(res: http.ServerResponse, urlPath: string): Promise<void> {
-    let relative: string
+  /**
+   * Serve the embedded browser bundle.
+   *
+   * There is no filesystem access here at all: a request either names a key that
+   * was embedded at build time or it does not exist. That is why the traversal
+   * and symlink-escape defences this function used to carry are gone rather than
+   * relaxed — `../../etc/passwd` is simply not a key. The class is structurally
+   * unreachable instead of guarded, which is also what lets the CLI ship as a
+   * single binary with no `dist/` beside it.
+   */
+  function serveStatic(res: http.ServerResponse, urlPath: string): void {
+    let key: string
     if (urlPath === '/') {
-      relative = 'index.html'
+      key = 'index.html'
     } else {
       try {
-        relative = decodeURIComponent(urlPath.slice(1))
+        key = decodeURIComponent(urlPath.slice(1))
       } catch {
         // A malformed escape like /%zz is a bad request, not a server fault.
         // This route has no auth gate, so letting it reach the 500 handler would
@@ -128,44 +119,21 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       }
     }
 
-    const abs = path.resolve(realDist, relative)
-    // Segment-wise, so a legitimate '..foo.js' is not caught by a bare prefix test.
-    if (escapesDir(realDist, abs)) {
-      sendJson(res, 400, { error: 'invalid asset path' })
-      return
-    }
-
-    // Lexical confinement is not enough: readFile follows symlinks, so a link
-    // inside dist/ would serve a file from anywhere. Workspace.confineReal
-    // resolves symlinks for documents; the asset layer must agree rather than
-    // being the weaker of the two.
-    let real: string
-    try {
-      real = await fsp.realpath(abs)
-    } catch {
+    const asset = ASSETS.get(key)
+    if (asset === undefined) {
       sendJson(res, 404, { error: 'not found' })
       return
     }
-    if (escapesDir(realDist, real)) {
-      sendJson(res, 400, { error: 'invalid asset path' })
-      return
-    }
 
-    try {
-      const body = await fsp.readFile(real)
-      res.writeHead(200, {
-        'content-type':
-          CONTENT_TYPES[path.extname(real).toLowerCase()] ?? 'application/octet-stream',
-        'cache-control': 'no-store',
-        // The bundle is ours, but these cost nothing and keep a stray asset from
-        // being sniffed into something executable.
-        'x-content-type-options': 'nosniff',
-        'referrer-policy': 'no-referrer',
-      })
-      res.end(body)
-    } catch {
-      sendJson(res, 404, { error: 'not found' })
-    }
+    res.writeHead(200, {
+      'content-type': asset.contentType,
+      'cache-control': 'no-store',
+      // The bundle is ours, but these cost nothing and keep a stray asset from
+      // being sniffed into something executable.
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+    })
+    res.end(Buffer.from(asset.base64, 'base64'))
   }
 
   async function handleApi(
@@ -276,7 +244,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 
     const done = url.pathname.startsWith('/api/')
       ? handleApi(req, res, url)
-      : serveStatic(res, url.pathname)
+      : Promise.resolve(serveStatic(res, url.pathname))
 
     done.catch((err: unknown) => {
       // Classify first so the operator still learns about an unexpected failure

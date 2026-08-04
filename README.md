@@ -26,31 +26,59 @@ Originally prototyped in Claude Design, then implemented as a real app.
 pnpm install
 pnpm dev          # start the dev server
 pnpm build        # typecheck (tsc) + production build (dist/)
-pnpm build:cli    # compile the CLI (dist-cli/) and chmod its entry point so the
-                  # package.json `bin: better-md` is directly executable
+pnpm build:cli    # embed dist/ into the CLI, compile it to dist-cli/, and make
+                  # the entry point executable
+pnpm binaries     # single-file executables into release/ (add --all for every
+                  # platform; needs network to fetch official Node builds)
 pnpm preview      # preview the production build
 
 pnpm test         # run unit tests (Vitest)
 pnpm test:e2e     # Playwright end-to-end tests — needs `pnpm build` AND
-                  # `pnpm build:cli` first: it spawns dist-cli/index.js, which
-                  # serves dist/
+                  # `pnpm build:cli` first, since it spawns dist-cli/index.js
 pnpm lint         # ESLint
 pnpm format       # Prettier (write)
 ```
 
-## Opening files from disk
-
-Build both targets once, then point the CLI at a file or directory:
+## Install
 
 ```bash
-pnpm build                     # dist/ — what the CLI serves as static assets
-pnpm build:cli                 # dist-cli/ — the CLI itself
-node dist-cli/index.js notes.md
+curl -fsSL https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh | sh
 ```
 
-- `better-md <file.md>` — open a single file
-- `better-md <directory>` — open every markdown file in a directory
-- `better-md --plan` — open Claude Code's plans from `~/.claude/plans`, newest first
+**No Node.js required** — the runtime is embedded in the binary, and so is the editor
+itself. One file, nothing else to install.
+
+The installer picks the right build for your platform, verifies it against the published
+`SHA256SUMS` (and refuses to install if that does not match, or if the checksums are
+missing), and drops it in `~/.local/bin` as both `btr-md` and `better-md`.
+
+Prebuilt for macOS and Linux, arm64 and x64.
+
+```bash
+BTR_MD_VERSION=v0.1.0 sh install.sh   # pin a release
+BTR_MD_INSTALL=/usr/local/bin sh …    # choose the directory
+```
+
+To uninstall, delete `btr-md` and `better-md` from your install directory. There is
+nothing else on disk.
+
+## Opening files from disk
+
+```bash
+btr-md notes.md      # open a single file
+btr-md ./docs        # open every markdown file in a directory
+btr-md --plan        # open Claude Code's plans (~/.claude/plans), newest active
+```
+
+`better-md` is an alias for the same binary, and each name reports itself in `--help` and
+in error messages.
+
+Running from a checkout instead of an install:
+
+```bash
+pnpm build && pnpm build:cli   # build:cli embeds dist/ into the CLI
+node dist-cli/index.js notes.md
+```
 
 Edits save back to the real file with `Cmd/Ctrl+S`. See **How it works** below for what
 happens when the file changes underneath you.
@@ -65,7 +93,7 @@ better-md --plan
    │
    ├─ resolve one directory as the workspace          cli/resolve.ts
    ├─ start http://127.0.0.1:<ephemeral port>         cli/server.ts
-   │    ├─ serves the prebuilt app out of dist/
+   │    ├─ serves the editor from assets embedded in the binary
    │    ├─ GET/PUT /api/doc     documents, via the confinement gateway
    │    └─ GET     /api/events  change notifications (SSE)
    ├─ watch the workspace, debounced 50ms             cli/watch.ts
@@ -74,6 +102,11 @@ better-md --plan
 
 Everything is scoped to that one directory. A fresh 32-byte token is minted per run and
 never persisted.
+
+The editor's own files are embedded at build time rather than read from disk, which is
+what makes a single-file binary possible — and it removes a whole class of bug as a side
+effect: the static route resolves no paths and opens no files, so a request either names
+an embedded asset or it 404s.
 
 ### Boot: which mode am I in?
 
@@ -154,13 +187,19 @@ src/
   ui/
     classes.ts      # shared Tailwind class fragments
     ConflictBanner.tsx # conflict / save-error banners
-cli/                 # the `better-md` CLI — argv to a served, token-guarded HTTP API
+cli/                 # the CLI — argv to a served, token-guarded HTTP API
   args.ts           # argv -> {target, plan, port, open}
+  programName.ts    # which alias was invoked, so help/errors name it correctly
   resolve.ts        # args -> workspace descriptor {root, files[], active}
   workspace.ts      # the only module that touches file contents; path confinement lives here
   watch.ts          # fs.watch, debounced, emits change events
-  server.ts         # node:http static serving + JSON API + SSE
+  server.ts         # node:http embedded-asset serving + JSON API + SSE
   index.ts          # wiring, browser open, SIGINT teardown
+  assets.generated.ts # GENERATED: the editor bundle, embedded (gitignored)
+scripts/
+  embed-assets.mjs  # dist/ -> cli/assets.generated.ts
+  build-binaries.mjs # single-file executables via Node SEA, per platform
+install.sh          # the one-line installer (downloads + verifies a release)
 e2e/
   cli-bridge.spec.ts # Playwright: spawns the CLI, drives the browser, asserts disk state
 vite.config.ts      # Vite + React + Tailwind plugins
@@ -190,6 +229,9 @@ the file API:
 3. **Path confinement** — only bare filenames with a `.md`, `.markdown`, or `.txt`
    extension resolving inside the workspace root are readable or writable, symlinks
    included.
+
+The editor's own assets are embedded in the binary, so serving them involves no path
+resolution and no filesystem access at all — that route cannot be walked out of.
 
 Confinement is path-based, so a **hardlink** inside the workspace pointing at a file
 outside it is not detected — unlike a symlink, it resolves to a distinct inode with no
