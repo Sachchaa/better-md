@@ -104,6 +104,14 @@ try {
     check('serves the embedded bundle', false, 'no script tag found in index.html')
   }
 
+  // The website lives in dist/ too, so the binary would happily embed and serve
+  // it if the exclusion in embed-assets.mjs regressed. Two things are asserted:
+  // the marketing page is absent, and `/` is still the EDITOR — the failure mode
+  // that matters is `better-md --plan` opening a landing page.
+  const site = await fetch(`${origin}/site/index.html`)
+  check('does not embed the website', site.status === 404, `HTTP ${site.status}`)
+  check('root is the editor, not the landing page', !rootBody.includes('Open the playground'))
+
   // --- the API is gated ----------------------------------------------------
   const noAuth = await fetch(`${origin}/api/workspace`)
   check('API refuses an unauthenticated request', noAuth.status === 401, `HTTP ${noAuth.status}`)

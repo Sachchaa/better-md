@@ -2,7 +2,7 @@
   "name": "btr-md",
   "version": "0.1.0",
   "type": "module",
-  "description": "Open and edit real Markdown files from disk in a browser-based editor \u2014 including Claude Code plans.",
+  "description": "Open and edit real Markdown files from disk in a browser-based editor — including Claude Code plans.",
   "packageManager": "pnpm@9.12.3",
   "bin": {
     "better-md": "./dist-cli/index.js",

@@ -35,6 +35,15 @@ const CONTENT_TYPES = {
  */
 const NOT_APP_ASSETS = new Set(['install.sh'])
 
+/**
+ * Directories in dist/ that belong to the website rather than the editor.
+ *
+ * A prefix rather than a filename list on purpose: `site/` is the marketing page,
+ * and adding a second page or an image to it should not silently gain weight in a
+ * ~110 MiB binary that would never serve it.
+ */
+const NOT_APP_DIRS = ['site/']
+
 /** Every file under `dir`, as paths relative to it with forward slashes. */
 async function walk(dir, base = dir) {
   const out = []
@@ -43,7 +52,9 @@ async function walk(dir, base = dir) {
     if (entry.isDirectory()) out.push(...(await walk(full, base)))
     else if (entry.isFile()) out.push(path.relative(base, full).split(path.sep).join('/'))
   }
-  return out.filter((f) => !NOT_APP_ASSETS.has(f)).sort()
+  return out
+    .filter((f) => !NOT_APP_ASSETS.has(f) && !NOT_APP_DIRS.some((d) => f.startsWith(d)))
+    .sort()
 }
 
 // A fresh clone has no dist/ yet, and `tsc` needs this module to exist before the

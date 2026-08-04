@@ -39,6 +39,14 @@ pnpm lint         # ESLint
 pnpm format       # Prettier (write)
 ```
 
+## Try it without installing
+
+<https://playground.better-md.dev> runs the editor in your browser with sample documents.
+
+Only sample documents, though — opening your own files is precisely the part that needs the
+local command, since a page served from the internet cannot read your disk. That is what
+the CLI below exists for.
+
 ## Install
 
 ```bash
@@ -205,14 +213,46 @@ scripts/
   embed-assets.mjs  # dist/ -> cli/assets.generated.ts
   build-binaries.mjs # single-file executables via Node SEA, per platform
 install.sh          # the one-line installer (downloads + verifies a release)
+public/
+  site/index.html   # better-md.dev landing page — hand-written, no build step
 e2e/
   cli-bridge.spec.ts # Playwright: spawns the CLI, drives the browser, asserts disk state
+  site.spec.ts      # Playwright: the landing page renders and its links are live
+vercel.json         # deploy config: host-based routing + install.sh content type
 vite.config.ts      # Vite + React + Tailwind plugins
 vitest.workspace.ts # test config: separate `app` (jsdom) and `cli` (node) projects
 playwright.config.ts # end-to-end test config
 eslint.config.js    # ESLint flat config
 tsconfig*.json      # TypeScript project config (strict), one per build target
 ```
+
+## Deployment
+
+One Vercel project serves three things out of a single `dist/`, routed by hostname in
+`vercel.json`:
+
+| URL                        | Serves                       | From                   |
+| -------------------------- | ---------------------------- | ---------------------- |
+| `better-md.dev`            | the landing page             | `dist/site/index.html` |
+| `playground.better-md.dev` | the editor, sample docs      | `dist/index.html`      |
+| `better-md.dev/install.sh` | the installer, as plain text | `dist/install.sh`      |
+
+The rewrite order matters: the `playground` host is matched first, and everything else —
+the apex, `www`, and every preview deployment — falls through to the landing page. So a
+preview URL shows the site at `/`, which is what you want to review; the editor stays
+reachable on any host at the explicit `/index.html`.
+
+`index.html` remains the **editor**, deliberately. The CLI embeds all of `dist/` and serves
+the key `index.html` at `/`, so making the landing page the root would mean
+`better-md --plan` opening a marketing page. Keeping the site at its own path leaves the
+binary's contract untouched and confines the split to hosting. `scripts/embed-assets.mjs`
+drops `site/` from the embedded manifest, and `scripts/smoke-binary.mjs` asserts both
+halves of that: the website is absent from the binary, and `/` is still the editor.
+
+The landing page is hand-written HTML with inline CSS rather than a second Vite entry — a
+marketing page should not carry a build pipeline, and staying out of the editor's bundle
+graph is what makes the exclusion above trivially true. Its theme tokens are copied from
+`src/index.css`, so the two read as one product.
 
 ## Security note
 
