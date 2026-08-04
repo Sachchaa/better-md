@@ -532,11 +532,15 @@ describe('resolveWorkspace', () => {
     expect(ws.files.map((f) => f.relPath).sort()).toEqual(['middle.md', 'newest.md', 'older.md'])
   })
 
+  // Every negative path asserts the error TYPE as well as the message. The type is
+  // the contract Task 6's entry point relies on (`err instanceof ResolveError` picks
+  // a clean one-line CLI error over a stack trace), so a regression that threw a bare
+  // Error with matching text must not pass.
   it('errors when the target does not exist', async () => {
     const dir = await tmpDir()
-    await expect(resolveWorkspace(opts({ target: path.join(dir, 'nope.md') }))).rejects.toThrow(
-      /no such file or directory/
-    )
+    const call = resolveWorkspace(opts({ target: path.join(dir, 'nope.md') }))
+    await expect(call).rejects.toThrow(ResolveError)
+    await expect(call).rejects.toThrow(/no such file or directory/)
   })
 
   it('errors when a directory holds no documents', async () => {
@@ -544,19 +548,27 @@ describe('resolveWorkspace', () => {
     await expect(resolveWorkspace(opts({ target: dir }))).rejects.toThrow(ResolveError)
   })
 
+  it('errors when the target is a file with an unsupported extension', async () => {
+    const dir = await tmpDir()
+    await writeAt(dir, 'image.png', 'not markdown', 1_000_000)
+    const call = resolveWorkspace(opts({ target: path.join(dir, 'image.png') }))
+    await expect(call).rejects.toThrow(ResolveError)
+    await expect(call).rejects.toThrow(/not a markdown file/)
+  })
+
   it('errors with an install hint when the plans directory is missing', async () => {
     const dir = await tmpDir()
     const missing = path.join(dir, 'no-plans-here')
-    await expect(resolveWorkspace(opts({ plan: true }), missing)).rejects.toThrow(
-      /Is Claude Code installed\?/
-    )
+    const call = resolveWorkspace(opts({ plan: true }), missing)
+    await expect(call).rejects.toThrow(ResolveError)
+    await expect(call).rejects.toThrow(/Is Claude Code installed\?/)
   })
 
   it('errors when the plans directory exists but is empty', async () => {
     const plans = await tmpDir()
-    await expect(resolveWorkspace(opts({ plan: true }), plans)).rejects.toThrow(
-      /Is Claude Code installed\?/
-    )
+    const call = resolveWorkspace(opts({ plan: true }), plans)
+    await expect(call).rejects.toThrow(ResolveError)
+    await expect(call).rejects.toThrow(/Is Claude Code installed\?/)
   })
 })
 ```
@@ -664,7 +676,7 @@ export async function resolveWorkspace(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- cli/resolve.test.ts`
-Expected: PASS — 7 tests.
+Expected: PASS — 8 tests.
 
 - [ ] **Step 5: Commit**
 
