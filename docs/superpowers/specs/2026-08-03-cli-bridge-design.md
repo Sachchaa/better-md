@@ -53,12 +53,19 @@ argv → args.ts → resolve.ts → Workspace ─┬→ server.ts → browser
 | `cli/resolve.ts`   | args → workspace descriptor `{root, files[], active}`. Single file (root = its parent, `files` = just it); directory (non-recursive `*.md`, `*.markdown`, `*.txt`, active = first alphabetically); `--plan` (root = `~/.claude/plans`, all plans listed, **active = newest by mtime**). |
 | `cli/workspace.ts` | The only module that touches file contents: `list()`, `read()`, `write()`. All path confinement lives here.                                                                                                                                                                             |
 | `cli/watch.ts`     | `fs.watch` on the root, debounced 50ms (editors write in bursts), emits change events.                                                                                                                                                                                                  |
-| `cli/server.ts`    | `node:http`: static `dist/`, JSON API, SSE. Holds a `Workspace`; imports no `fs`.                                                                                                                                                                                                       |
+| `cli/server.ts`    | `node:http`: static `dist/`, JSON API, SSE. Holds a `Workspace` and routes every document read/write through it; uses `fs` only for `distDir` assets.                                                                                                                                   |
 | `cli/index.ts`     | Wiring, browser open, SIGINT teardown.                                                                                                                                                                                                                                                  |
 
-`workspace.ts` is the security-critical unit and is deliberately small (~40 lines) with no
-HTTP in it, so it can be tested exhaustively. `server.ts` cannot bypass it: it has no
-filesystem import to reach around with.
+`workspace.ts` is the security-critical unit and has no HTTP in it, so it can be tested
+exhaustively — and it needs to be: implementation review found a browser-reachable write
+escape here (a dangling symlink defeating the original `realpath`-based check), so its
+confinement logic and tests are the deliverable, not boilerplate.
+
+The invariant `server.ts` upholds is narrower than "no `fs` import" — it does import `fs`
+to serve the built bundle. What it never does is derive a **document** path from a request
+and hand it to `fs` itself: all user content moves through `Workspace`, while `distDir`
+access is confined separately and never influenced by a workspace-relative path. Review
+against that property, not against the absence of an import.
 
 No new runtime dependencies — `http`, `fs`, `crypto`, and `parseArgs` are stdlib on
 Node 22.
