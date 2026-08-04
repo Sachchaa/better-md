@@ -1126,7 +1126,7 @@ export class Workspace {
     if (baseMtimeMs !== null && current === null) {
       throw new ConflictError('file no longer exists on disk', null)
     }
-    if (baseMtimeMs !== null && current !== null && Math.abs(current - baseMtimeMs) > 1) {
+    if (baseMtimeMs !== null && current !== null && current !== baseMtimeMs) {
       throw new ConflictError('file changed on disk since it was loaded', current)
     }
 
@@ -1136,8 +1136,14 @@ export class Workspace {
 }
 ```
 
-> The 1ms tolerance in the mtime comparison absorbs filesystem timestamp
-> granularity differences; anything larger is a genuine external write.
+> **Corrected after measurement.** An earlier revision compared with a 1ms
+> tolerance, justified as absorbing "filesystem timestamp granularity". The final
+> review measured that claim on the target platform and it is false: fstat and
+> path-stat agreed 300/300, and a reported write mtime matched a re-read 300/300.
+> The tolerance bought nothing and cost silent lost updates — an external write
+> landing within 1ms of the client's baseline passed the check, and the watcher
+> echo that followed was then suppressed by `isOwnEcho`'s exact match, so the
+> user was never told. Compare exactly.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -4308,6 +4314,150 @@ git commit -m "docs: document the CLI bridge and its security model"
 ```
 
 ---
+
+### Task 14: Final-review fix wave
+
+The whole-branch review returned **"With fixes"**. Three of its findings are plan gaps
+faithfully implemented rather than implementation defects, so they are fixed here.
+
+**Files:** `src/lib/serverDocSource.ts`, `src/App.tsx`, `cli/workspace.ts`, `src/types.ts`,
+`src/App.test.tsx` (new), `vitest.workspace.ts`, `README.md`, and the design spec.
+
+- [ ] **Step 1 (Critical): one unreadable document must not brick the app**
+
+`ServerDocSource.list()` reads every file under a single `Promise.all`, so one rejection
+fails the whole listing, and `loadFromSource` has no `catch` — leaving a permanent
+"Loading documents…" screen plus an unhandled rejection. Reproduced four ways: a dangling
+symlink, a symlink to a directory, a mode-000 file, and — needing no unusual state at all —
+**a file removed between the CLI resolving its descriptor and the browser calling `list()`**.
+That last one is likely in `~/.claude/plans`, since agents rewrite and remove files there
+while the CLI is running, and `resolve.ts` sorts alphabetically so a `bad.md` becomes active.
+
+Two changes. In `ServerDocSource.list()`, settle per file instead of all-or-nothing:
+
+```ts
+const settled = await Promise.allSettled(
+  listing.files.map(async (file) => {
+    const doc = await this.read(file.relPath)
+    return {
+      name: file.name,
+      relPath: file.relPath,
+      content: doc.content,
+      mtimeMs: doc.mtimeMs,
+    }
+  })
+)
+// One unreadable document must not cost the user the whole workspace. Drop the
+// failures and report them; the readable ones still open.
+const files = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+const unreadable = listing.files
+  .filter((f) => !files.some((k) => k.relPath === f.relPath))
+  .map((f) => f.relPath)
+return { files, active: listing.active, unreadable }
+```
+
+Add `unreadable: string[]` to `DocListing` (and `[]` from `LocalDocSource`). In
+`loadFromSource`, surface skipped documents and — critically — catch:
+
+```ts
+  private async loadFromSource(): Promise<void> {
+    let listing: DocListing
+    try {
+      listing = await this.props.source.list()
+    } catch (err) {
+      // Never leave the app on the loading screen. Without this the user sees
+      // "Loading documents…" forever with no clue and no recovery but restarting.
+      this.setState({
+        loading: false,
+        loadError: err instanceof Error ? err.message : 'Could not load documents.',
+      })
+      return
+    }
+    ...
+```
+
+Render `loadError` where the loading screen is, and note any `unreadable` entries through
+`saveError`. Add `loadError: string | null` to `State`.
+
+- [ ] **Step 2 (Important): a deletion during an outage must not leave the document clean**
+
+`reloadFromDisk` does `read(relPath).catch(() => null)` then returns, so a file deleted
+while the SSE stream was down leaves the document marked **clean** with the "not watching"
+indicator cleared — and `onBeforeUnload` then will not warn, so Cmd+W discards the last
+remaining copy. The spec promises the opposite, and the in-band `removed` handler already
+does it correctly. Fail safe:
+
+```ts
+const doc = await this.props.source.read(relPath).catch(() => null)
+if (doc === null) {
+  // Read failed — most likely deleted while we were not watching. Treat it the
+  // same as an in-band 'removed': the buffer may now be the only copy, so it
+  // must be dirty and the unload prompt must fire.
+  this.setState((s) => ({
+    baseMtimeMs: { ...s.baseMtimeMs, [relPath]: null },
+    dirty: { ...s.dirty, [relPath]: true },
+    saveError: `${relPath} could not be read. It may have been deleted; saving will recreate it.`,
+  }))
+  return
+}
+```
+
+- [ ] **Step 3 (Important): compare mtimes exactly**
+
+`cli/workspace.ts` — replace `Math.abs(current - baseMtimeMs) > 1` with
+`current !== baseMtimeMs`. See the corrected note above: the tolerance's stated
+justification was measured false, and it permitted silent lost updates.
+
+- [ ] **Step 4 (Important): App-level tests, so the guards cannot be deleted silently**
+
+The review deleted **both** App data-loss guards — the `isOwnEcho` call and the conditional
+dirty clear — and got 127/127 unit, 3/3 e2e, typecheck and lint all green. The pure helpers
+are tested; that `App` calls them and uses their results is asserted nowhere. This is the
+project's dominant defect class surviving at the one layer where every data-loss bug lived.
+
+Add `src/App.test.tsx` using `createRoot` + React 19's `act` with a fake `DocSource` — no
+new dependency. Widen the `app` Vitest project's include to `src/**/*.test.{ts,tsx}`.
+
+Minimum cases, each of which must fail if its guard is removed:
+
+1. A successful save clears dirty **only** for the content that landed (edit mid-flight ⇒ still dirty).
+2. The own-write echo raises **no** banner.
+3. A genuine external change while dirty raises exactly **one** conflict banner.
+4. A resync notices a modification **and** a deletion.
+5. A failed `list()` renders an error, not a spinner.
+
+Prove each is load-bearing by deleting the corresponding guard and confirming that test alone fails.
+
+- [ ] **Step 5: report real save failures**
+
+`Workspace.write` lets `fs.writeFile` errnos through raw, and the server correctly refuses
+to echo them because they embed absolute paths — so a read-only file, read-only mount or
+full disk all reach the user as "internal server error". Map `EACCES`/`EPERM`/`EROFS`/
+`ENOSPC`/`EDQUOT` to messages naming the `relPath` (client-supplied) and never the absolute
+path. Correct the spec's "500 carrying the OS message" line to match.
+
+- [ ] **Step 6: refresh the README, which this branch made stale**
+
+`README.md` still says React 18 (package.json is `^19.2.0`), lists `vitest.config.ts` which
+this branch deleted, and its project-structure block omits `cli/`, `e2e/`,
+`src/lib/docSource.ts`, `src/lib/serverDocSource.ts` and `src/ui/ConflictBanner.tsx` — the
+entire deliverable. Add `pnpm test:e2e` (and that it needs a prior `pnpm build`), note that
+`pnpm build:cli` is what makes the declared `bin` executable, and add one sentence to the
+security section stating that confinement is path-based so a **hardlink** to a file outside
+the workspace is not detected.
+
+- [ ] **Step 7: record the deliberate deferrals**
+
+In the spec, add a short "Known limitations" section: the single `conflict` slot (self-heals
+on the next save), a file created after boot not appearing until restart, no SSE heartbeat,
+the hardlink case, and that `Workspace.write` is truncate-then-write rather than
+write-temp-then-rename. On that last one, state the decision and the reason: `rename` onto a
+resolved path would break in-root hardlinks and drop xattrs, so it is deferred deliberately
+rather than overlooked.
+
+- [ ] **Step 8: full gate battery and commit**
+
+All six gates. Report each exit status individually.
 
 ## Post-plan: publishing
 
