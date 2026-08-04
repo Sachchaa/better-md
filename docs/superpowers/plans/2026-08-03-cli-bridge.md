@@ -3644,6 +3644,69 @@ git commit -m "feat(app): load documents from a source, track dirty state, save 
 - Consumes: `ChangeEvent` from `./lib/docSource`.
 - Produces: `onExternalChange`, `resolveKeepMine`, `resolveTakeTheirs` (replacing the Task 10 stubs).
 
+- [ ] **Step 0: Close the last silent-loss path — a save must not clear dirty state it did not write**
+
+Task 10's review found this, out of its own scope, and it is the highest-value item in
+this task. Interleaving:
+
+1. Type `A` → `dirty[alpha] = true`.
+2. Cmd+S → `PUT` with content `A` goes in flight.
+3. Type `B` before it resolves → buffer is now `AB`. A rescuing Cmd+S is **dropped** by
+   the in-flight guard.
+4. The `PUT` resolves ok → the success branch clears `dirty[alpha]`.
+
+Buffer is `AB`, disk is `A`, and `onBeforeUnload` now early-returns because nothing looks
+dirty — so the tab closes with no prompt and `B` is gone. The window is one local
+round-trip, so this is occasional rather than routine, but it sits directly underneath
+the unload safety net and is invisible when it happens.
+
+Capture what was sent and only clear the flag if the buffer still matches it:
+
+```tsx
+const relPath = file.relPath
+const sent = this.state.md
+this.setState({ saving: true, saveError: null })
+const result = await this.props.source.save(relPath, sent, this.state.baseMtimeMs[relPath] ?? null)
+if (result.ok) {
+  this.setState((s) => ({
+    saving: false,
+    // Only this exact content reached disk. If the buffer moved on while the
+    // write was in flight, those newer edits are still unsaved — clearing the
+    // flag here would strand them with no dirty marker and no unload prompt.
+    dirty: s.md === sent ? { ...s.dirty, [relPath]: false } : s.dirty,
+    baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
+    conflict: s.conflict?.relPath === relPath ? null : s.conflict,
+  }))
+  return
+}
+```
+
+> Comparing `s.md` is correct only because the guard permits one write at a time per
+> app, so `sent` cannot belong to a different document than the one now active.
+
+Also make the in-flight guard an instance field rather than React state, so it does not
+depend on React having flushed `saving: true` before the next input task:
+
+```tsx
+  private saveInFlight = false
+```
+
+Set it `true` immediately before the `await` and `false` in a `finally`, and have
+`saveActive` return early on it instead of on `this.state.saving`. Keep `state.saving`
+for the UI.
+
+- [ ] **Step 0b: A dropped file in disk mode must not become permanently stuck**
+
+Task 10 hid rename and delete whenever the source is disk-backed, but keyed that on the
+_source_ rather than the _row_. Drag-and-drop still creates in-editor documents, so a
+stray drop in disk mode produces a row that is unsaveable **and** unremovable for the
+rest of the session. Delete on such a row is truthful — it only ever touched in-memory
+state. In `renderFileRow`, widen the guard:
+
+```tsx
+const canManage = !this.diskBacked() || f.relPath === undefined
+```
+
 - [ ] **Step 1: Implement the change handler**
 
 Replace the two stubs with:
