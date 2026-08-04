@@ -3225,7 +3225,6 @@ export interface State {
   /** relPath → mtime the content was loaded at, or null for non-disk docs. */
   baseMtimeMs: Record<string, number | null>
   conflict: ConflictState | null
-  saving: boolean
   saveError: string | null
   /** False while the live-update channel is down, so the UI stops implying it is live. */
   watching: boolean
@@ -3309,7 +3308,6 @@ export function SaveErrorBanner({ message, onDismiss }: SaveErrorBannerProps): R
       dirty: {},
       baseMtimeMs: {},
       conflict: null,
-      saving: false,
       saveError: null,
       watching: !props.source.canSave,
     }
@@ -3407,7 +3405,7 @@ Add these members to the class:
     // "theirContent" IS the user's own text. Cmd+S auto-repeat is enough to
     // trigger it, and once conflict resolution lands, taking that stale
     // "theirs" over a newer buffer is real data loss.
-    if (this.state.saving) return
+    if (this.saveInFlight) return
 
     const file = this.activeFile()
     // No file at all: still loading. Silent is right — there is nothing to say.
@@ -3431,7 +3429,7 @@ Add these members to the class:
     }
 
     const relPath = file.relPath
-    this.setState({ saving: true, saveError: null })
+    this.setState({ saveError: null })
     const result = await this.props.source.save(
       relPath,
       this.state.md,
@@ -3439,7 +3437,6 @@ Add these members to the class:
     )
     if (result.ok) {
       this.setState((s) => ({
-        saving: false,
         dirty: { ...s.dirty, [relPath]: false },
         baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
         // A successful write settles any conflict on THIS document. Guarded by
@@ -3450,7 +3447,6 @@ Add these members to the class:
     }
     if (result.reason === 'conflict') {
       this.setState({
-        saving: false,
         conflict: {
           relPath,
           theirContent: result.theirContent,
@@ -3468,6 +3464,13 @@ Add these members to the class:
   // code, not stubs to remember: dismissing a conflict without resolving it is
   // the correct fallback behaviour until reload handling exists.
   onExternalChange = (event: SourceEvent): void => {
+    // A change that lands while the stream is down produces no event, so
+    // reconnecting must re-read rather than just clearing the indicator —
+    // otherwise the UI goes back to claiming it is live while showing stale
+    // content. Gated on having actually been disconnected: 'connected' also
+    // fires on the very first connection, concurrently with loadFromSource,
+    // whose flushSync replaces baseMtimeMs wholesale.
+
     if (event.type === 'connected') this.setState({ watching: true })
     if (event.type === 'disconnected') this.setState({ watching: false })
   }
@@ -3669,7 +3672,6 @@ this.setState({ saving: true, saveError: null })
 const result = await this.props.source.save(relPath, sent, this.state.baseMtimeMs[relPath] ?? null)
 if (result.ok) {
   this.setState((s) => ({
-    saving: false,
     // Only this exact content reached disk. If the buffer moved on while the
     // write was in flight, those newer edits are still unsaved — clearing the
     // flag here would strand them with no dirty marker and no unload prompt.
@@ -3692,8 +3694,8 @@ depend on React having flushed `saving: true` before the next input task:
 ```
 
 Set it `true` immediately before the `await` and `false` in a `finally`, and have
-`saveActive` return early on it instead of on `this.state.saving`. Keep `state.saving`
-for the UI.
+`saveActive` return early on it instead of on `this.state.saving`. Do **not** keep
+`state.saving` — Step 0d removes it, since nothing reads it.
 
 - [ ] **Step 0b: A dropped file in disk mode must not become permanently stuck**
 
@@ -3707,6 +3709,112 @@ state. In `renderFileRow`, widen the guard:
 const canManage = !this.diskBacked() || f.relPath === undefined
 ```
 
+- [ ] **Step 0d: Drop the dead `saving` state**
+
+`state.saving` is written in five places and read in none — two consecutive reviews
+flagged the 4-writes/0-reads pattern, and Step 0 moved the actual guard to the
+`saveInFlight` instance field. An earlier note said to keep it "for the UI", but no UI
+consumes it and nothing lints dead state. Remove the field from `State`, its constructor
+seed, and every `saving:` write. Use `saveInFlight` for the guard and set it inside the
+`try`, cleared in `finally`, so a throw cannot wedge saves for the session.
+
+- [ ] **Step 0c: Extract the two data-loss decisions into pure, tested helpers**
+
+`resolveTakeTheirs`'s `null` branch is the one place in this codebase whose regression is
+silent, unrecoverable data loss — someone "simplifying" it to `theirContent ?? ''` would
+overwrite a user's document with nothing, and today the only thing preventing that is a
+comment. Same for the echo check: written as a bare mtime comparison inside a component
+method, it is easy to invert. Neither is testable where it sits, because the `app` Vitest
+project only includes `src/**/*.test.ts` and there is no React testing library.
+
+Both decisions are pure functions of their inputs. Move them out.
+
+Create `src/lib/conflictResolution.ts`:
+
+```ts
+/** What "take theirs" should do with a conflict. */
+export type TakeTheirsOutcome = { kind: 'gone' } | { kind: 'apply'; content: string }
+
+/**
+ * A null `theirContent` means the document vanished from disk — there is no
+ * "theirs" to take. Returning 'gone' rather than an empty string is the whole
+ * point: applying '' would replace the user's text with nothing, which is data
+ * loss dressed up as conflict resolution.
+ */
+export function decideTakeTheirs(theirContent: string | null): TakeTheirsOutcome {
+  if (theirContent === null) return { kind: 'gone' }
+  return { kind: 'apply', content: theirContent }
+}
+
+/**
+ * True when a change notification describes our own write. The CLI watches the
+ * workspace and notifies on any change, including the one this app just made,
+ * so a save bounces an event straight back. If disk still carries the mtime we
+ * loaded or last wrote, nothing moved and there is nothing to reload.
+ */
+export function isOwnEcho(
+  diskMtimeMs: number | null,
+  baseMtimeMs: number | null | undefined
+): boolean {
+  if (diskMtimeMs === null || baseMtimeMs === null || baseMtimeMs === undefined) return false
+  return diskMtimeMs === baseMtimeMs
+}
+```
+
+Create `src/lib/conflictResolution.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { decideTakeTheirs, isOwnEcho } from './conflictResolution'
+
+describe('decideTakeTheirs', () => {
+  it('applies the on-disk content when there is some', () => {
+    expect(decideTakeTheirs('# theirs')).toEqual({ kind: 'apply', content: '# theirs' })
+  })
+
+  it('applies genuinely empty on-disk content', () => {
+    // A file truncated to nothing is a real state and must be applicable —
+    // this is why the "no theirs" signal is null and not ''.
+    expect(decideTakeTheirs('')).toEqual({ kind: 'apply', content: '' })
+  })
+
+  it('reports gone for a vanished document rather than inventing content', () => {
+    // The regression this exists to catch: `theirContent ?? ''` would return
+    // { kind: 'apply', content: '' } here and silently wipe the user's buffer.
+    expect(decideTakeTheirs(null)).toEqual({ kind: 'gone' })
+  })
+})
+
+describe('isOwnEcho', () => {
+  it('recognises an unchanged mtime as our own write', () => {
+    expect(isOwnEcho(1000, 1000)).toBe(true)
+  })
+
+  it('treats a moved mtime as a genuine external change', () => {
+    expect(isOwnEcho(2000, 1000)).toBe(false)
+  })
+
+  it('treats a never-saved document as a genuine change', () => {
+    // baseMtimeMs null means "should be a new file"; any disk content is news.
+    expect(isOwnEcho(1000, null)).toBe(false)
+    expect(isOwnEcho(1000, undefined)).toBe(false)
+  })
+
+  it('treats an unknown disk mtime as a genuine change', () => {
+    // Fail toward reloading: a missed echo costs a redundant read, a missed
+    // real change shows the user stale content.
+    expect(isOwnEcho(null, 1000)).toBe(false)
+  })
+})
+```
+
+Then use them in `App.tsx`: replace the inline echo comparison with
+`if (isOwnEcho(doc.mtimeMs, this.state.baseMtimeMs[relPath])) return`, and branch
+`resolveTakeTheirs` on `decideTakeTheirs(conflict.theirContent)` instead of testing
+`=== null` inline. Import from `./lib/conflictResolution`.
+
+`src/lib/conflictResolution.test.ts` adds **7 tests** (117 → 124).
+
 - [ ] **Step 1: Implement the change handler**
 
 Replace the two stubs with:
@@ -3714,7 +3822,13 @@ Replace the two stubs with:
 ```tsx
   onExternalChange = (event: SourceEvent): void => {
     if (event.type === 'connected') {
+      const wasDisconnected = this.state.watching === false && this.state.loading === false
       this.setState({ watching: true })
+      if (wasDisconnected) {
+        for (const file of this.state.files) {
+          if (file.relPath !== undefined) void this.reloadFromDisk(file.relPath)
+        }
+      }
       return
     }
     if (event.type === 'disconnected') {
@@ -3724,6 +3838,11 @@ Replace the two stubs with:
     if (event.type === 'removed') {
       this.setState((s) => ({
         baseMtimeMs: { ...s.baseMtimeMs, [event.relPath]: null },
+        // Mark it dirty: the buffer is now the ONLY copy. Without this there is
+        // no bullet and no unload prompt, so the last remaining copy of a file
+        // someone just deleted can be closed away silently. Matches what the
+        // null branch of resolveTakeTheirs already does for the same situation.
+        dirty: { ...s.dirty, [event.relPath]: true },
         saveError: `${event.relPath} was deleted on disk. Saving will recreate it.`,
       }))
       return
@@ -3738,6 +3857,18 @@ Replace the two stubs with:
   private async reloadFromDisk(relPath: string): Promise<void> {
     const doc = await this.props.source.read(relPath).catch(() => null)
     if (doc === null) return
+
+    // Ignore the echo of our own write. The CLI watches the workspace and
+    // notifies on ANY change, including the one this app just made, so every
+    // successful save bounces a `changed` event straight back. Without this
+    // check, typing inside the watcher's debounce window of your own save
+    // raises a banner claiming the file "changed on disk" when nothing did —
+    // and offers a one-click "Take theirs" that discards those keystrokes.
+    //
+    // Same oracle the server uses for its own conflict check: if the mtime
+    // still matches what we loaded or last wrote, disk has not moved, so there
+    // is nothing to reload and nothing to conflict over.
+    if (doc.mtimeMs !== null && doc.mtimeMs === this.state.baseMtimeMs[relPath]) return
 
     if (this.state.dirty[relPath] === true) {
       this.setState({
@@ -3834,6 +3965,10 @@ Add the helper alongside `activeFile()`:
 
 ```tsx
   private isDirty(f: FileDoc): boolean {
+    // Only meaningful when a save can actually clear it. LocalDocSource's samples
+    // carry relPath values, so without this gate every edited sample keeps a
+    // permanent bullet that nothing in the browser-only app can ever remove.
+    if (!this.diskBacked()) return false
     return f.relPath !== undefined && this.state.dirty[f.relPath] === true
   }
 ```
