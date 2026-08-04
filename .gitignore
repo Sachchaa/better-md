@@ -35,3 +35,6 @@ pnpm-debug.log*
 
 # Agent worktrees (created by EnterWorktree)
 .claude/worktrees/
+
+test-results/
+playwright-report/
