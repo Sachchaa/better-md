@@ -60,6 +60,11 @@ describe('ServerDocSource', () => {
       { name: 'b.md', relPath: 'b.md', content: 'body of b.md', mtimeMs: 100 },
     ])
     expect(listing.active).toBe('b.md')
+
+    // One /api/workspace + one /api/doc per file, and no more. Without this the
+    // test would still pass if someone reintroduced a separate mtime fetch —
+    // the exact regression the mtimeMs-in-listing design exists to prevent.
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
   it('returns ok on a successful save', async () => {
@@ -147,6 +152,59 @@ describe('ServerDocSource', () => {
     // 'connected' lands first so the UI can show a live indicator.
     expect(seen[0]).toEqual({ type: 'connected' })
     expect(seen.find((e) => e.type === 'changed')).toEqual({ type: 'changed', relPath: 'a.md' })
+  })
+
+  it('cancels the reconnect backoff timer on unsubscribe', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 500 }))
+      const source = new ServerDocSource(
+        'http://127.0.0.1:1',
+        'tok',
+        fetchImpl as unknown as typeof fetch
+      )
+
+      const seen: SourceEvent[] = []
+      const unsubscribe = source.subscribe((event) => seen.push(event))
+
+      // Let the failing fetch settle so the loop reaches its backoff sleep.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(seen).toContainEqual({ type: 'disconnected' })
+      expect(vi.getTimerCount()).toBe(1)
+
+      unsubscribe()
+
+      // The point: cancelled, not merely muted. Without clearTimeout the timer
+      // would still be pending here and `stopped` would only block the next
+      // iteration — indistinguishable from correct behaviour by any other
+      // assertion.
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('passes a null theirContent through instead of inventing empty content', async () => {
+    // The server sends theirContent: null when the document vanished entirely.
+    // Coalescing that to '' would let a "take theirs" action overwrite the
+    // user's text with nothing, so null must survive the mapping.
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ error: 'gone', theirContent: null, theirMtimeMs: null }, 409)
+    )
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const result = await source.save('a.md', 'mine', 100)
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'conflict',
+      theirContent: null,
+      theirMtimeMs: null,
+    })
   })
 
   it('reports disconnection when the stream fails', async () => {

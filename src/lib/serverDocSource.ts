@@ -68,7 +68,10 @@ export class ServerDocSource implements DocSource {
         body: JSON.stringify({ relPath, content, baseMtimeMs }),
       })
       if (res.status === 409) {
-        const body = (await res.json()) as { theirContent: string; theirMtimeMs: number }
+        const body = (await res.json()) as {
+          theirContent: string | null
+          theirMtimeMs: number | null
+        }
         return {
           ok: false,
           reason: 'conflict',
@@ -99,6 +102,7 @@ export class ServerDocSource implements DocSource {
     let stopped = false
     let attempt = 0
     let controller: AbortController | null = null
+    let backoffTimer: ReturnType<typeof setTimeout> | null = null
 
     const run = async (): Promise<void> => {
       while (!stopped) {
@@ -135,10 +139,28 @@ export class ServerDocSource implements DocSource {
           // Fall through to the backoff below.
         }
         if (stopped) return
-        callback({ type: 'disconnected' })
+
+        // Inside a try: a subscriber callback that throws must not become an
+        // unhandled rejection out of the fire-and-forget `void run()` below.
+        try {
+          callback({ type: 'disconnected' })
+        } catch {
+          // A broken subscriber is not the stream's problem.
+        }
+
         attempt += 1
         const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS)
-        await new Promise((resolve) => setTimeout(resolve, delay))
+        // Hold the handle so unsubscribe can cancel it. `stopped` alone would
+        // stop the next iteration, but the timer itself would stay pending —
+        // the same "muted, not cancelled" gap the watcher had to fix earlier in
+        // this plan, and in a browser a repeatedly mounted component would
+        // accumulate one live timer per unsubscribe.
+        await new Promise<void>((resolve) => {
+          backoffTimer = setTimeout(() => {
+            backoffTimer = null
+            resolve()
+          }, delay)
+        })
       }
     }
 
@@ -147,6 +169,10 @@ export class ServerDocSource implements DocSource {
     return () => {
       stopped = true
       controller?.abort()
+      if (backoffTimer !== null) {
+        clearTimeout(backoffTimer)
+        backoffTimer = null
+      }
     }
   }
 }

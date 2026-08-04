@@ -27,8 +27,15 @@ export interface SaveOk {
 export interface SaveConflict {
   ok: false
   reason: 'conflict'
-  theirContent: string
-  theirMtimeMs: number
+  /**
+   * The on-disk version, or null when the document vanished entirely — the
+   * server sends null for that case. Deliberately NOT coalesced to '': a
+   * "take theirs" action on an empty string would overwrite the user's text
+   * with nothing. null means "there is no theirs", which the UI must handle
+   * as keep-yours rather than as an empty document.
+   */
+  theirContent: string | null
+  theirMtimeMs: number | null
 }
 
 export interface SaveFailed {
