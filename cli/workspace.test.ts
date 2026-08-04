@@ -91,6 +91,50 @@ describe('Workspace symlink escapes', () => {
     // The whole point: nothing may have appeared at the link's target.
     await expect(fs.access(target)).rejects.toThrow()
   })
+
+  // A symlink that stays inside the root still must not launder the type and
+  // extension checks a direct leaf gets. Pointing one at a directory produced a
+  // raw EISDIR, at a FIFO made open() block forever, and at `payload.sh` wrote
+  // outside the allowlist while staying in-root.
+  it('refuses a symlink to an in-root directory', async () => {
+    const { root, ws } = await fixture()
+    await fs.symlink(path.join(root, 'sub'), path.join(root, 'dirlink.md'))
+
+    await expect(ws.read('dirlink.md')).rejects.toThrow(PathError)
+    await expect(ws.write('dirlink.md', 'x', null)).rejects.toThrow(PathError)
+  })
+
+  it('refuses a symlink to an in-root file outside the extension allowlist', async () => {
+    const { root, ws } = await fixture()
+    await fs.writeFile(path.join(root, 'payload.sh'), '#!/bin/sh\n', 'utf8')
+    await fs.symlink(path.join(root, 'payload.sh'), path.join(root, 'alias.md'))
+
+    await expect(ws.read('alias.md')).rejects.toThrow(PathError)
+    await expect(ws.write('alias.md', 'rm -rf /', null)).rejects.toThrow(PathError)
+
+    expect(await fs.readFile(path.join(root, 'payload.sh'), 'utf8')).toBe('#!/bin/sh\n')
+  })
+
+  it('accepts a symlink to an in-root document and follows it', async () => {
+    const { root, ws } = await fixture()
+    await fs.symlink(path.join(root, 'notes.md'), path.join(root, 'alias.md'))
+
+    expect((await ws.read('alias.md')).content).toBe('# notes')
+
+    const before = await ws.read('alias.md')
+    await ws.write('alias.md', 'via alias', before.mtimeMs)
+    expect(await fs.readFile(path.join(root, 'notes.md'), 'utf8')).toBe('via alias')
+  })
+
+  // Reachable from a plain request with no local staging: an over-long name must
+  // be a bad request, not a raw ENAMETOOLONG surfacing as a 500.
+  it('reports an over-long filename as PathError, not a raw errno', async () => {
+    const { ws } = await fixture()
+    const tooLong = `${'x'.repeat(300)}.md`
+
+    await expect(ws.read(tooLong)).rejects.toThrow(PathError)
+    await expect(ws.write(tooLong, 'x', null)).rejects.toThrow(PathError)
+  })
 })
 
 describe('Workspace writes', () => {

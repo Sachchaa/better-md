@@ -110,12 +110,16 @@ export class Workspace {
     try {
       leaf = await fs.lstat(abs)
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') {
         // Genuinely absent — no link to follow. confine() already proved this
         // path sits directly under the root, so creating it here is safe.
         return abs
       }
-      throw err
+      // Any other errno here is a property of the requested name (ENAMETOOLONG,
+      // ENOTDIR, EACCES...). Those are bad-request conditions, not server faults,
+      // and an over-long filename is reachable from a plain HTTP request.
+      throw new PathError(`cannot inspect path: ${code ?? 'unknown error'}`)
     }
 
     if (leaf.isSymbolicLink()) {
@@ -127,6 +131,18 @@ export class Workspace {
       }
       if (Workspace.escapes(realRoot, real)) {
         throw new PathError('resolved path escapes the workspace root')
+      }
+      // The resolved target gets the same scrutiny as a direct leaf. Without this
+      // an in-root symlink launders every check that follows: pointing it at a
+      // directory yields a raw EISDIR, at a FIFO makes open() block forever and
+      // burn a libuv threadpool thread, and at `payload.sh` defeats the
+      // extension allowlist while staying inside the root.
+      const targetExt = path.extname(real).toLowerCase()
+      if (!(DOC_EXTENSIONS as readonly string[]).includes(targetExt)) {
+        throw new PathError('symlink target is not a supported file type')
+      }
+      if (!(await fs.stat(real)).isFile()) {
+        throw new PathError('symlink target is not a regular file')
       }
       // Return the resolved path so later syscalls do not re-traverse the link.
       return real
@@ -141,18 +157,23 @@ export class Workspace {
 
   async read(relPath: string): Promise<DocRead> {
     const abs = await this.confineReal(relPath)
-    // Read through one descriptor so the content and the mtime describe the same
-    // version of the file. Two independent syscalls can straddle an external
-    // write, pairing stale content with a fresh mtime — after which the client's
-    // next save passes the base-mtime check and silently discards that write.
+    // Read content and mtime through one descriptor so they describe the same
+    // version of the file. Two independent path-based syscalls can straddle an
+    // external write, pairing stale content with a fresh mtime — after which the
+    // client's next save passes the base-mtime check and silently discards that
+    // write. This is not fully atomic (readFile is several reads and stat is a
+    // separate fstat), but it does pin the inode, so a rename-replace writer can
+    // no longer produce a mismatched pair.
     let handle: Awaited<ReturnType<typeof fs.open>>
     try {
       handle = await fs.open(abs, 'r')
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
+      // ENOENT is the only expected failure: confineReal has already proved the
+      // leaf is a regular file, so EISDIR cannot reach here. Anything else is a
+      // property of the request (EACCES on a mode-000 file), not a server fault.
       if (code === 'ENOENT') throw new NotFoundError(`no such document: ${relPath}`)
-      if (code === 'EISDIR') throw new PathError('path is not a regular file')
-      throw err
+      throw new PathError(`cannot open document: ${code ?? 'unknown error'}`)
     }
     try {
       const [content, stat] = await Promise.all([handle.readFile('utf8'), handle.stat()])
