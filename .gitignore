@@ -45,3 +45,6 @@ cli/assets.generated.ts
 # Binary build artifacts
 build/
 release/
+
+# Copied from ./install.sh at build time so Vercel serves it
+public/install.sh

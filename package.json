@@ -2,7 +2,7 @@
   "name": "btr-md",
   "version": "0.1.0",
   "type": "module",
-  "description": "Open and edit real Markdown files from disk in a browser-based editor — including Claude Code plans.",
+  "description": "Open and edit real Markdown files from disk in a browser-based editor \u2014 including Claude Code plans.",
   "packageManager": "pnpm@9.12.3",
   "bin": {
     "better-md": "./dist-cli/index.js",
@@ -13,9 +13,9 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "pnpm sync:installer && tsc -p tsconfig.app.json && vite build",
     "build:cli": "pnpm embed && tsc -p tsconfig.cli.json && node -e \"require('fs').chmodSync('dist-cli/index.js', 0o755)\"",
-    "typecheck": "tsc -b",
+    "typecheck": "pnpm embed && tsc -b",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -25,7 +25,8 @@
     "preview": "vite preview",
     "prepublishOnly": "pnpm build && pnpm build:cli",
     "embed": "node scripts/embed-assets.mjs",
-    "binaries": "node scripts/build-binaries.mjs"
+    "binaries": "node scripts/build-binaries.mjs",
+    "sync:installer": "node -e \"const f=require('fs');f.mkdirSync('public',{recursive:true});f.copyFileSync('install.sh','public/install.sh')\""
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
