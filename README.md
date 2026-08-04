@@ -52,9 +52,85 @@ node dist-cli/index.js notes.md
 - `better-md <directory>` — open every markdown file in a directory
 - `better-md --plan` — open Claude Code's plans from `~/.claude/plans`, newest first
 
-Edits save back to the real file with `Cmd/Ctrl+S`. If the file changes on disk while you
-have no unsaved edits, the view refreshes automatically; if you do have unsaved edits, a
-banner lets you keep yours or take theirs.
+Edits save back to the real file with `Cmd/Ctrl+S`. See **How it works** below for what
+happens when the file changes underneath you.
+
+## How it works
+
+better-md is a browser app, and browsers cannot open arbitrary files from disk. The CLI
+closes that gap by becoming a small local server the app talks to.
+
+```
+better-md --plan
+   │
+   ├─ resolve one directory as the workspace          cli/resolve.ts
+   ├─ start http://127.0.0.1:<ephemeral port>         cli/server.ts
+   │    ├─ serves the prebuilt app out of dist/
+   │    ├─ GET/PUT /api/doc     documents, via the confinement gateway
+   │    └─ GET     /api/events  change notifications (SSE)
+   ├─ watch the workspace, debounced 50ms             cli/watch.ts
+   └─ open your browser at  .../?t=<token>
+```
+
+Everything is scoped to that one directory. A fresh 32-byte token is minted per run and
+never persisted.
+
+### Boot: which mode am I in?
+
+The launch URL carries `?t=<token>`. On boot the app reads it, chooses a document source,
+and immediately strips it from the address bar so it never lands in your history or a
+copy-pasted link.
+
+- **Token present** → the disk-backed source. Documents come from the workspace and
+  `Cmd/Ctrl+S` writes real files.
+- **No token** → the original browser-only app with its sample documents.
+
+That second branch is deliberate, not incidental. Open the served page without the token —
+a bookmark, a retyped URL, a second tab — and you get the plain editor, never a broken
+one. It is also why the page itself is served without auth: only `/api/*` is gated.
+
+Both modes go through one interface (`DocSource`), so the editor itself has no idea which
+it is talking to.
+
+### Saving
+
+Save is explicit: nothing is written until you press `Cmd/Ctrl+S`. Auto-save would rewrite
+plan files on every stray keystroke.
+
+Each save carries the modification time the document was loaded at. If disk has moved
+since, the write is refused and you choose:
+
+- **Keep mine** — adopt the on-disk timestamp, so your next save goes through.
+- **Take theirs** — replace your buffer with the on-disk version.
+
+If the file was _deleted_ rather than changed, there is no "theirs" to take. The app says
+so and keeps your buffer, because that buffer is now the only copy of it.
+
+### Staying in sync
+
+The CLI watches the workspace and streams changes over SSE, so a plan updates in the
+editor while an agent is rewriting it:
+
+- **No unsaved edits** → the document refreshes silently.
+- **Unsaved edits** → a conflict banner. Nothing is overwritten in either direction until
+  you pick.
+
+The watcher sees the app's own writes too, so every save would otherwise echo back looking
+like an external change. Those are filtered out by comparing timestamps — a save never
+raises a conflict against itself.
+
+### When something goes wrong
+
+- **The stream drops** → a "Not watching for changes" notice appears, and reconnecting
+  re-reads the workspace so anything that changed during the outage is picked up.
+- **The CLI was restarted** → the page is holding a dead token. Rather than retrying
+  forever, the app tells you to reopen the URL the new run printed.
+- **A document cannot be read** — permissions, a broken symlink, deleted between startup
+  and load — it is reported by name and the rest of the workspace still opens.
+- **Unsaved edits at close** → the browser warns you before discarding them.
+
+Renaming and deleting act on the editor only, so those controls are hidden in disk-backed
+mode rather than implying a change that never reaches the file.
 
 ## Project structure
 
