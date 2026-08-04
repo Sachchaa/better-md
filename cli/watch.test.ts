@@ -110,7 +110,16 @@ describe('watchWorkspace', () => {
     })
 
     emit('change', 'notes.md')
+
+    // Assert the timer is actually cancelled, not merely muted. Dropping
+    // clearTimeout from stop() would leave this pending timeout to fire, hit the
+    // `stopped` guard and emit nothing — so the events assertion below would
+    // still pass while a real timer kept the Node event loop alive after
+    // Ctrl-C. Only the timer count can distinguish those two states.
+    expect(vi.getTimerCount()).toBe(1)
     stop()
+    expect(vi.getTimerCount()).toBe(0)
+
     vi.advanceTimersByTime(50)
 
     expect(closed()).toBe(true)

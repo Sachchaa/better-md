@@ -12,8 +12,17 @@ export type WatcherFactory = (
   cb: (event: string, filename: string | null) => void
 ) => RawWatcher
 
-export const nodeWatcherFactory: WatcherFactory = (root, cb) =>
-  fs.watch(root, { persistent: true }, cb)
+export const nodeWatcherFactory: WatcherFactory = (root, cb) => {
+  const watcher = fs.watch(root, { persistent: true }, cb)
+  // FSWatcher is an EventEmitter, so an unhandled 'error' would throw and take
+  // the whole CLI down. Losing live updates is recoverable; losing the server
+  // mid-edit is not. Report and carry on serving.
+  watcher.on('error', (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`better-md: stopped watching ${root}: ${message}\n`)
+  })
+  return watcher
+}
 
 export interface WatchOptions {
   debounceMs?: number
