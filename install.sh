@@ -1,7 +1,7 @@
 #!/bin/sh
 # better-md installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh | sh
+#   curl -fsSL https://better-md.dev/install.sh | sh
 #
 # Downloads a self-contained better-md executable, verifies it against the
 # published SHA256SUMS, and installs it. No Node.js required — the runtime is

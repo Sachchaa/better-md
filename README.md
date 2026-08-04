@@ -42,8 +42,13 @@ pnpm format       # Prettier (write)
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh | sh
+curl -fsSL https://better-md.dev/install.sh | sh
 ```
+
+Read it first if you'd rather not pipe a script you haven't seen — it is served as plain
+text, so <https://better-md.dev/install.sh> opens in a browser. The
+[raw copy on GitHub](https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh) is
+identical.
 
 **No Node.js required** — the runtime is embedded in the binary, and so is the editor
 itself. One file, nothing else to install.
