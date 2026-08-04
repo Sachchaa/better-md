@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { ConflictError, PathError, Workspace } from './workspace.js'
+import { ConflictError, NotFoundError, PathError, Workspace } from './workspace.js'
 
 const dirs: string[] = []
 
@@ -50,21 +50,46 @@ describe('Workspace path confinement', () => {
     })
   }
 
-  it('rejects a symlink that resolves outside the root', async () => {
-    const { root, outside, ws } = await fixture()
-    await fs.symlink(path.join(outside, 'secret.md'), path.join(root, 'escape.md'))
-
-    await expect(ws.read('escape.md')).rejects.toThrow(PathError)
-    // The outside file must be untouched.
-    expect(await fs.readFile(path.join(outside, 'secret.md'), 'utf8')).toBe('SECRET')
-  })
-
   it('reads a confined file', async () => {
     const { ws } = await fixture()
     const doc = await ws.read('notes.md')
     expect(doc.content).toBe('# notes')
     expect(doc.relPath).toBe('notes.md')
     expect(doc.mtimeMs).toBeGreaterThan(0)
+  })
+
+  it('reports a missing document as NotFoundError, not a raw errno', async () => {
+    const { ws } = await fixture()
+    await expect(ws.read('ghost.md')).rejects.toThrow(NotFoundError)
+  })
+})
+
+// A dangling symlink is the case that made the earlier implementation escape the
+// root: realpath reports ENOENT for "nothing here" AND for "symlink with a missing
+// target", so treating ENOENT as "safe to create" let writeFile follow the link and
+// write outside the workspace. These two tests are the regression guard.
+describe('Workspace symlink escapes', () => {
+  it('refuses to read or write through a symlink pointing outside the root', async () => {
+    const { root, outside, ws } = await fixture()
+    await fs.symlink(path.join(outside, 'secret.md'), path.join(root, 'escape.md'))
+
+    await expect(ws.read('escape.md')).rejects.toThrow(PathError)
+    await expect(ws.write('escape.md', 'pwned', null)).rejects.toThrow(PathError)
+
+    expect(await fs.readFile(path.join(outside, 'secret.md'), 'utf8')).toBe('SECRET')
+  })
+
+  it('refuses to write through a DANGLING symlink and creates nothing outside', async () => {
+    const { root, outside, ws } = await fixture()
+    const target = path.join(outside, 'implanted.md')
+    await fs.symlink(target, path.join(root, 'escape.md'))
+
+    await expect(ws.write('escape.md', 'PWNED', null)).rejects.toThrow(PathError)
+    await expect(ws.write('escape.md', 'PWNED', 1_700_000_000_000)).rejects.toThrow(PathError)
+    await expect(ws.read('escape.md')).rejects.toThrow(PathError)
+
+    // The whole point: nothing may have appeared at the link's target.
+    await expect(fs.access(target)).rejects.toThrow()
   })
 })
 
@@ -95,5 +120,24 @@ describe('Workspace writes', () => {
   it('refuses to overwrite an existing file when baseMtimeMs is null', async () => {
     const { ws } = await fixture()
     await expect(ws.write('notes.md', 'clobber', null)).rejects.toThrow(ConflictError)
+  })
+
+  it('refuses a non-null base mtime when the file no longer exists', async () => {
+    const { ws } = await fixture()
+    await expect(ws.write('ghost.md', 'x', 1_700_000_000_000)).rejects.toThrow(ConflictError)
+  })
+
+  // Every conflict check is a positive comparison, and NaN makes all of them
+  // false — so without an explicit guard a NaN base slips past all three and
+  // overwrites the file. The HTTP layer builds this value from a JSON body.
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('refuses a %s base mtime instead of clobbering', async (_label, base) => {
+    const { root, ws } = await fixture()
+
+    await expect(ws.write('notes.md', 'CLOBBERED', base)).rejects.toThrow(PathError)
+
+    expect(await fs.readFile(path.join(root, 'notes.md'), 'utf8')).toBe('# notes')
   })
 })

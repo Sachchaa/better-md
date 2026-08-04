@@ -6,15 +6,25 @@ import type { WorkspaceDescriptor, WorkspaceFile } from './types.js'
 /** Thrown when a requested path is not a plain document inside the root. */
 export class PathError extends Error {}
 
-/** Thrown when the on-disk state no longer matches what the client loaded. */
+/**
+ * Thrown when the on-disk state no longer matches what the client loaded.
+ * `mtimeMs` is null when there is no on-disk version to report.
+ */
 export class ConflictError extends Error {
   constructor(
     message: string,
-    readonly mtimeMs: number
+    readonly mtimeMs: number | null
   ) {
     super(message)
   }
 }
+
+/**
+ * Thrown when a confined path names nothing readable. Distinct from PathError so
+ * the HTTP layer can answer 404 instead of turning a routine missing file into a
+ * 500 by letting a raw errno escape.
+ */
+export class NotFoundError extends Error {}
 
 export interface DocRead {
   relPath: string
@@ -67,38 +77,89 @@ export class Workspace {
     }
 
     const abs = path.resolve(this.root, relPath)
-    const rel = path.relative(this.root, abs)
-    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    if (Workspace.escapes(this.root, abs)) {
       throw new PathError('path escapes the workspace root')
     }
     return abs
   }
 
-  /** Syntactic validation plus symlink resolution against the real root. */
+  /** True when `candidate` is outside `root` (or is the root itself). */
+  private static escapes(root: string, candidate: string): boolean {
+    const rel = path.relative(root, candidate)
+    // Compare whole path segments: a bare startsWith('..') also matches the
+    // legitimate filename '..md'.
+    return rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)
+  }
+
+  /**
+   * Syntactic validation plus symlink resolution against the real root.
+   *
+   * The leaf is inspected with `lstat`, never `realpath` alone. `realpath`
+   * reports ENOENT both for "nothing here" and for "a symlink whose target is
+   * missing", and conflating those let a dangling symlink inside the root pass
+   * validation — after which `writeFile` followed the link and created a file
+   * at an arbitrary absolute path outside the workspace. `lstat` distinguishes
+   * the two cases, so a symlink is always resolved and range-checked, and an
+   * unresolvable one is refused rather than written through.
+   */
   private async confineReal(relPath: string): Promise<string> {
     const abs = this.confine(relPath)
-    let real: string
+    const realRoot = await fs.realpath(this.root)
+
+    let leaf: Awaited<ReturnType<typeof fs.lstat>>
     try {
-      real = await fs.realpath(abs)
+      leaf = await fs.lstat(abs)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        // Not yet on disk. confine() already proved it is directly under root.
+        // Genuinely absent — no link to follow. confine() already proved this
+        // path sits directly under the root, so creating it here is safe.
         return abs
       }
       throw err
     }
-    const realRoot = await fs.realpath(this.root)
-    const rel = path.relative(realRoot, real)
-    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new PathError('resolved path escapes the workspace root')
+
+    if (leaf.isSymbolicLink()) {
+      let real: string
+      try {
+        real = await fs.realpath(abs)
+      } catch {
+        throw new PathError('path is a symlink whose target cannot be resolved')
+      }
+      if (Workspace.escapes(realRoot, real)) {
+        throw new PathError('resolved path escapes the workspace root')
+      }
+      // Return the resolved path so later syscalls do not re-traverse the link.
+      return real
     }
+
+    if (!leaf.isFile()) {
+      throw new PathError('path is not a regular file')
+    }
+
     return abs
   }
 
   async read(relPath: string): Promise<DocRead> {
     const abs = await this.confineReal(relPath)
-    const [content, stat] = await Promise.all([fs.readFile(abs, 'utf8'), fs.stat(abs)])
-    return { relPath, content, mtimeMs: stat.mtimeMs }
+    // Read through one descriptor so the content and the mtime describe the same
+    // version of the file. Two independent syscalls can straddle an external
+    // write, pairing stale content with a fresh mtime — after which the client's
+    // next save passes the base-mtime check and silently discards that write.
+    let handle: Awaited<ReturnType<typeof fs.open>>
+    try {
+      handle = await fs.open(abs, 'r')
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') throw new NotFoundError(`no such document: ${relPath}`)
+      if (code === 'EISDIR') throw new PathError('path is not a regular file')
+      throw err
+    }
+    try {
+      const [content, stat] = await Promise.all([handle.readFile('utf8'), handle.stat()])
+      return { relPath, content, mtimeMs: stat.mtimeMs }
+    } finally {
+      await handle.close()
+    }
   }
 
   /**
@@ -110,6 +171,15 @@ export class Workspace {
     content: string,
     baseMtimeMs: number | null
   ): Promise<{ mtimeMs: number }> {
+    // Guard the base mtime before any comparison. Every check below is a
+    // positive comparison, and NaN makes all of them false — so a NaN or
+    // non-numeric base would fall straight through to writeFile and silently
+    // clobber the file this mechanism exists to protect. The HTTP layer coerces
+    // this value out of a JSON body, so a bad value is reachable, not theoretical.
+    if (baseMtimeMs !== null && !Number.isFinite(baseMtimeMs)) {
+      throw new PathError('baseMtimeMs must be null or a finite number')
+    }
+
     const abs = await this.confineReal(relPath)
 
     let current: number | null = null
@@ -123,7 +193,7 @@ export class Workspace {
       throw new ConflictError('file already exists on disk', current)
     }
     if (baseMtimeMs !== null && current === null) {
-      throw new ConflictError('file no longer exists on disk', 0)
+      throw new ConflictError('file no longer exists on disk', null)
     }
     if (baseMtimeMs !== null && current !== null && Math.abs(current - baseMtimeMs) > 1) {
       throw new ConflictError('file changed on disk since it was loaded', current)
