@@ -279,6 +279,15 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       : serveStatic(res, url.pathname)
 
     done.catch((err: unknown) => {
+      // Classify first so the operator still learns about an unexpected failure
+      // even when the response is already partly on the wire and only res.end()
+      // is possible below.
+      const isExpected =
+        err instanceof BadRequestError || err instanceof PathError || err instanceof NotFoundError
+      if (!isExpected) {
+        log(`unhandled request error: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       // Never write headers twice, whatever the failure was.
       if (res.headersSent) {
         res.end()
@@ -298,10 +307,9 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         sendJson(res, 404, { error: err.message })
         return
       }
-      // Unexpected: log the detail for the operator, but never return it. Raw
-      // errno messages embed absolute paths (Workspace.write lets EACCES through
-      // from fs.writeFile), which would disclose where the workspace lives.
-      log(`unhandled request error: ${err instanceof Error ? err.message : String(err)}`)
+      // Already logged above. Never return the detail: raw errno messages embed
+      // absolute paths (Workspace.write lets EACCES through from fs.writeFile),
+      // which would disclose where the workspace lives.
       sendJson(res, 500, { error: 'internal server error' })
     })
   })
