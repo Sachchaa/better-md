@@ -698,7 +698,7 @@ The security core. Every rejection here is a vulnerability that does not happen.
 **Interfaces:**
 
 - Consumes: `WorkspaceDescriptor`, `WorkspaceFile` from `./types.js`; `DOC_EXTENSIONS` from `./resolve.js`.
-- Produces: `class Workspace` with `root: string`, `active: string`, `list(): WorkspaceFile[]`, `read(relPath): Promise<DocRead>`, `write(relPath, content, baseMtimeMs): Promise<{ mtimeMs: number }>`; plus `PathError`, `ConflictError`, `DocRead`.
+- Produces: `class Workspace` with `root: string`, `active: string`, `list(): WorkspaceFile[]`, `read(relPath): Promise<DocRead>`, `write(relPath, content, baseMtimeMs): Promise<{ mtimeMs: number }>`; plus `PathError`, `ConflictError` (with `mtimeMs: number | null`), `NotFoundError`, `DocRead`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -709,7 +709,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { ConflictError, PathError, Workspace } from './workspace.js'
+import { ConflictError, NotFoundError, PathError, Workspace } from './workspace.js'
 
 const dirs: string[] = []
 
@@ -757,21 +757,46 @@ describe('Workspace path confinement', () => {
     })
   }
 
-  it('rejects a symlink that resolves outside the root', async () => {
-    const { root, outside, ws } = await fixture()
-    await fs.symlink(path.join(outside, 'secret.md'), path.join(root, 'escape.md'))
-
-    await expect(ws.read('escape.md')).rejects.toThrow(PathError)
-    // The outside file must be untouched.
-    expect(await fs.readFile(path.join(outside, 'secret.md'), 'utf8')).toBe('SECRET')
-  })
-
   it('reads a confined file', async () => {
     const { ws } = await fixture()
     const doc = await ws.read('notes.md')
     expect(doc.content).toBe('# notes')
     expect(doc.relPath).toBe('notes.md')
     expect(doc.mtimeMs).toBeGreaterThan(0)
+  })
+
+  it('reports a missing document as NotFoundError, not a raw errno', async () => {
+    const { ws } = await fixture()
+    await expect(ws.read('ghost.md')).rejects.toThrow(NotFoundError)
+  })
+})
+
+// A dangling symlink is the case that made the earlier implementation escape the
+// root: realpath reports ENOENT for "nothing here" AND for "symlink with a missing
+// target", so treating ENOENT as "safe to create" let writeFile follow the link and
+// write outside the workspace. These two tests are the regression guard.
+describe('Workspace symlink escapes', () => {
+  it('refuses to read or write through a symlink pointing outside the root', async () => {
+    const { root, outside, ws } = await fixture()
+    await fs.symlink(path.join(outside, 'secret.md'), path.join(root, 'escape.md'))
+
+    await expect(ws.read('escape.md')).rejects.toThrow(PathError)
+    await expect(ws.write('escape.md', 'pwned', null)).rejects.toThrow(PathError)
+
+    expect(await fs.readFile(path.join(outside, 'secret.md'), 'utf8')).toBe('SECRET')
+  })
+
+  it('refuses to write through a DANGLING symlink and creates nothing outside', async () => {
+    const { root, outside, ws } = await fixture()
+    const target = path.join(outside, 'implanted.md')
+    await fs.symlink(target, path.join(root, 'escape.md'))
+
+    await expect(ws.write('escape.md', 'PWNED', null)).rejects.toThrow(PathError)
+    await expect(ws.write('escape.md', 'PWNED', 1_700_000_000_000)).rejects.toThrow(PathError)
+    await expect(ws.read('escape.md')).rejects.toThrow(PathError)
+
+    // The whole point: nothing may have appeared at the link's target.
+    await expect(fs.access(target)).rejects.toThrow()
   })
 })
 
@@ -803,6 +828,25 @@ describe('Workspace writes', () => {
     const { ws } = await fixture()
     await expect(ws.write('notes.md', 'clobber', null)).rejects.toThrow(ConflictError)
   })
+
+  it('refuses a non-null base mtime when the file no longer exists', async () => {
+    const { ws } = await fixture()
+    await expect(ws.write('ghost.md', 'x', 1_700_000_000_000)).rejects.toThrow(ConflictError)
+  })
+
+  // Every conflict check is a positive comparison, and NaN makes all of them
+  // false — so without an explicit guard a NaN base slips past all three and
+  // overwrites the file. The HTTP layer builds this value from a JSON body.
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('refuses a %s base mtime instead of clobbering', async (_label, base) => {
+    const { root, ws } = await fixture()
+
+    await expect(ws.write('notes.md', 'CLOBBERED', base)).rejects.toThrow(PathError)
+
+    expect(await fs.readFile(path.join(root, 'notes.md'), 'utf8')).toBe('# notes')
+  })
 })
 ```
 
@@ -822,15 +866,25 @@ import type { WorkspaceDescriptor, WorkspaceFile } from './types.js'
 /** Thrown when a requested path is not a plain document inside the root. */
 export class PathError extends Error {}
 
-/** Thrown when the on-disk state no longer matches what the client loaded. */
+/**
+ * Thrown when the on-disk state no longer matches what the client loaded.
+ * `mtimeMs` is null when there is no on-disk version to report.
+ */
 export class ConflictError extends Error {
   constructor(
     message: string,
-    readonly mtimeMs: number
+    readonly mtimeMs: number | null
   ) {
     super(message)
   }
 }
+
+/**
+ * Thrown when a confined path names nothing readable. Distinct from PathError so
+ * the HTTP layer can answer 404 instead of turning a routine missing file into a
+ * 500 by letting a raw errno escape.
+ */
+export class NotFoundError extends Error {}
 
 export interface DocRead {
   relPath: string
@@ -883,38 +937,89 @@ export class Workspace {
     }
 
     const abs = path.resolve(this.root, relPath)
-    const rel = path.relative(this.root, abs)
-    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    if (Workspace.escapes(this.root, abs)) {
       throw new PathError('path escapes the workspace root')
     }
     return abs
   }
 
-  /** Syntactic validation plus symlink resolution against the real root. */
+  /** True when `candidate` is outside `root` (or is the root itself). */
+  private static escapes(root: string, candidate: string): boolean {
+    const rel = path.relative(root, candidate)
+    // Compare whole path segments: a bare startsWith('..') also matches the
+    // legitimate filename '..md'.
+    return rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)
+  }
+
+  /**
+   * Syntactic validation plus symlink resolution against the real root.
+   *
+   * The leaf is inspected with `lstat`, never `realpath` alone. `realpath`
+   * reports ENOENT both for "nothing here" and for "a symlink whose target is
+   * missing", and conflating those let a dangling symlink inside the root pass
+   * validation — after which `writeFile` followed the link and created a file
+   * at an arbitrary absolute path outside the workspace. `lstat` distinguishes
+   * the two cases, so a symlink is always resolved and range-checked, and an
+   * unresolvable one is refused rather than written through.
+   */
   private async confineReal(relPath: string): Promise<string> {
     const abs = this.confine(relPath)
-    let real: string
+    const realRoot = await fs.realpath(this.root)
+
+    let leaf: Awaited<ReturnType<typeof fs.lstat>>
     try {
-      real = await fs.realpath(abs)
+      leaf = await fs.lstat(abs)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        // Not yet on disk. confine() already proved it is directly under root.
+        // Genuinely absent — no link to follow. confine() already proved this
+        // path sits directly under the root, so creating it here is safe.
         return abs
       }
       throw err
     }
-    const realRoot = await fs.realpath(this.root)
-    const rel = path.relative(realRoot, real)
-    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new PathError('resolved path escapes the workspace root')
+
+    if (leaf.isSymbolicLink()) {
+      let real: string
+      try {
+        real = await fs.realpath(abs)
+      } catch {
+        throw new PathError('path is a symlink whose target cannot be resolved')
+      }
+      if (Workspace.escapes(realRoot, real)) {
+        throw new PathError('resolved path escapes the workspace root')
+      }
+      // Return the resolved path so later syscalls do not re-traverse the link.
+      return real
     }
+
+    if (!leaf.isFile()) {
+      throw new PathError('path is not a regular file')
+    }
+
     return abs
   }
 
   async read(relPath: string): Promise<DocRead> {
     const abs = await this.confineReal(relPath)
-    const [content, stat] = await Promise.all([fs.readFile(abs, 'utf8'), fs.stat(abs)])
-    return { relPath, content, mtimeMs: stat.mtimeMs }
+    // Read through one descriptor so the content and the mtime describe the same
+    // version of the file. Two independent syscalls can straddle an external
+    // write, pairing stale content with a fresh mtime — after which the client's
+    // next save passes the base-mtime check and silently discards that write.
+    let handle: Awaited<ReturnType<typeof fs.open>>
+    try {
+      handle = await fs.open(abs, 'r')
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') throw new NotFoundError(`no such document: ${relPath}`)
+      if (code === 'EISDIR') throw new PathError('path is not a regular file')
+      throw err
+    }
+    try {
+      const [content, stat] = await Promise.all([handle.readFile('utf8'), handle.stat()])
+      return { relPath, content, mtimeMs: stat.mtimeMs }
+    } finally {
+      await handle.close()
+    }
   }
 
   /**
@@ -926,6 +1031,15 @@ export class Workspace {
     content: string,
     baseMtimeMs: number | null
   ): Promise<{ mtimeMs: number }> {
+    // Guard the base mtime before any comparison. Every check below is a
+    // positive comparison, and NaN makes all of them false — so a NaN or
+    // non-numeric base would fall straight through to writeFile and silently
+    // clobber the file this mechanism exists to protect. The HTTP layer coerces
+    // this value out of a JSON body, so a bad value is reachable, not theoretical.
+    if (baseMtimeMs !== null && !Number.isFinite(baseMtimeMs)) {
+      throw new PathError('baseMtimeMs must be null or a finite number')
+    }
+
     const abs = await this.confineReal(relPath)
 
     let current: number | null = null
@@ -939,7 +1053,7 @@ export class Workspace {
       throw new ConflictError('file already exists on disk', current)
     }
     if (baseMtimeMs !== null && current === null) {
-      throw new ConflictError('file no longer exists on disk', 0)
+      throw new ConflictError('file no longer exists on disk', null)
     }
     if (baseMtimeMs !== null && current !== null && Math.abs(current - baseMtimeMs) > 1) {
       throw new ConflictError('file changed on disk since it was loaded', current)
@@ -957,7 +1071,10 @@ export class Workspace {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- cli/workspace.test.ts`
-Expected: PASS — 14 tests (9 parameterised rejections + symlink + read + 4 write cases).
+Expected: PASS — 22 tests (9 parameterised rejections + read + NotFoundError + 2 symlink-escape
+cases + 5 write cases + 2 parameterised non-finite-base cases). Count the `it.each` rows
+individually; if your run reports fewer, find out which case did not register rather than
+adjusting this number.
 
 Then close the emit-survival gap Task 1 deferred. `workspace.ts` contains the first
 **value-level** relative import in `cli/` (`import { DOC_EXTENSIONS } from './resolve.js'`),
@@ -1382,6 +1499,31 @@ describe('document API', () => {
     expect(body.theirContent).toBe('# notes')
     expect(body.theirMtimeMs).toBeGreaterThan(0)
   })
+
+  it('returns 404 for a document that does not exist', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/doc?path=ghost.md`, { headers: auth(handle) })
+    expect(res.status).toBe(404)
+  })
+
+  // A non-numeric baseMtimeMs must not be coerced. Number('nonsense') is NaN, and
+  // NaN compares false against every conflict check, so coercion here would let a
+  // request overwrite a document without knowing its mtime.
+  it.each([
+    ['a string', 'nonsense'],
+    ['a boolean', true],
+    ['an object', {}],
+  ])('rejects %s baseMtimeMs with 400 and leaves the file alone', async (_label, value) => {
+    const { handle, root } = await harness()
+    const res = await fetch(`${handle.origin}/api/doc`, {
+      method: 'PUT',
+      headers: { ...auth(handle), 'content-type': 'application/json' },
+      body: JSON.stringify({ relPath: 'notes.md', content: 'CLOBBERED', baseMtimeMs: value }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(await fs.readFile(path.join(root, 'notes.md'), 'utf8')).toBe('# notes')
+  })
 })
 
 describe('events', () => {
@@ -1413,7 +1555,7 @@ import fsp from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
 import type { WatchEvent } from './types.js'
-import { ConflictError, PathError, type Workspace } from './workspace.js'
+import { ConflictError, NotFoundError, PathError, type Workspace } from './workspace.js'
 
 export interface ServerOptions {
   workspace: Workspace
@@ -1560,20 +1702,35 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         sendJson(res, 400, { error: 'relPath and content are required strings' })
         return
       }
-      const base =
-        parsed.baseMtimeMs === null || parsed.baseMtimeMs === undefined
-          ? null
-          : Number(parsed.baseMtimeMs)
+      // Validate rather than coerce. `Number(x)` turns a non-numeric body field
+      // into NaN, and NaN compares false against every conflict check — which
+      // would let a request overwrite a document without knowing its mtime.
+      // Workspace.write also guards this; rejecting here keeps the 400 honest.
+      let base: number | null
+      if (parsed.baseMtimeMs === null || parsed.baseMtimeMs === undefined) {
+        base = null
+      } else if (typeof parsed.baseMtimeMs === 'number' && Number.isFinite(parsed.baseMtimeMs)) {
+        base = parsed.baseMtimeMs
+      } else {
+        sendJson(res, 400, { error: 'baseMtimeMs must be null or a finite number' })
+        return
+      }
       try {
         sendJson(res, 200, await workspace.write(parsed.relPath, parsed.content, base))
       } catch (err) {
         if (err instanceof ConflictError) {
-          const theirs = await workspace.read(parsed.relPath)
-          sendJson(res, 409, {
-            error: err.message,
-            theirContent: theirs.content,
-            theirMtimeMs: theirs.mtimeMs,
-          })
+          // Re-read to hand the client their version. If it vanished entirely,
+          // there is no "theirs" to send — report the conflict without content.
+          try {
+            const theirs = await workspace.read(parsed.relPath)
+            sendJson(res, 409, {
+              error: err.message,
+              theirContent: theirs.content,
+              theirMtimeMs: theirs.mtimeMs,
+            })
+          } catch {
+            sendJson(res, 409, { error: err.message, theirContent: null, theirMtimeMs: null })
+          }
           return
         }
         throw err
@@ -1605,6 +1762,12 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     done.catch((err: unknown) => {
       if (err instanceof PathError) {
         sendJson(res, 400, { error: err.message })
+        return
+      }
+      // A missing document is a routine 404, not a server fault. Without this the
+      // workspace's NotFoundError would surface as a 500.
+      if (err instanceof NotFoundError) {
+        sendJson(res, 404, { error: err.message })
         return
       }
       sendJson(res, 500, { error: err instanceof Error ? err.message : 'internal error' })
@@ -1644,7 +1807,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- cli/server.test.ts`
-Expected: PASS — 12 tests.
+Expected: PASS — 16 tests (the three `it.each` rows for non-numeric `baseMtimeMs` count
+individually).
 
 - [ ] **Step 5: Run the full suite, typecheck, and lint**
 
