@@ -1676,6 +1676,28 @@ describe('document API', () => {
   })
 })
 
+describe('shutdown', () => {
+  // Regression guard: server.close() alone waits on lingering connections, so a
+  // half-sent request or an aborted SSE stream left it pending for seconds. The
+  // CLI wires SIGINT to close(), so that reads to a user as Ctrl-C hanging.
+  it('closes promptly with a half-sent request in flight', async () => {
+    const { handle } = await harness()
+
+    // Headers sent, body promised but never delivered — the connection lingers.
+    const socket = net.connect(handle.port, '127.0.0.1')
+    await new Promise<void>((resolve) => socket.on('connect', () => resolve()))
+    socket.write('PUT /api/doc HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 999\r\n\r\n{')
+
+    const started = performance.now()
+    await handle.close()
+    const elapsed = performance.now() - started
+
+    // Generous bound: the failure mode was seconds, not milliseconds.
+    expect(elapsed).toBeLessThan(1000)
+    socket.destroy()
+  })
+})
+
 describe('malformed request targets', () => {
   /**
    * `fetch` cannot send an unparseable target — its own URL parser rejects it
@@ -2121,7 +2143,14 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     async close(): Promise<void> {
       for (const client of clients) client.end()
       clients.clear()
-      await new Promise<void>((resolve) => server.close(() => resolve()))
+      // server.close() only stops accepting and then waits for existing
+      // connections to finish. A client that sent headers but no body, or an
+      // aborted SSE stream, keeps it pending indefinitely — which would make
+      // Ctrl-C look like a hang, since index.ts wires SIGINT straight to this.
+      // Destroy what is left rather than waiting on it.
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+      server.closeAllConnections()
+      await closed
     },
   }
 }
@@ -2130,10 +2159,10 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- cli/server.test.ts`
-Expected: PASS — **22 tests**, composed as: static serving 5 (index, assets, traversal,
+Expected: PASS — **23 tests**, composed as: static serving 5 (index, assets, traversal,
 malformed escape, symlink-out-of-dist) + API authentication 4 + document API 9 (list, read,
-traversal path, save, 409, 404, and 3 `it.each` rows) + malformed request targets 2 (`it.each`
-rows, raw socket) + error handling 1 + events 1.
+traversal path, save, 409, 404, and 3 `it.each` rows) + shutdown 1 + malformed request targets 2
+(`it.each` rows, raw socket) + error handling 1 + events 1.
 
 Verify by enumerating names, not arithmetic. If your run reports a different total, report the
 discrepancy and which case did not register — do not adjust the count or a test to match. An
@@ -2159,12 +2188,27 @@ git commit -m "feat(cli): add HTTP server with token auth, doc API, and SSE"
 **Files:**
 
 - Create: `cli/index.ts`, `cli/open.ts`
-- Modify: `README.md` (usage section only)
+- Modify: `cli/server.ts` (`close()` only), `cli/server.test.ts` (one new test), `README.md`
 
 **Interfaces:**
 
 - Consumes: everything from tasks 1-5.
 - Produces: the `better-md` executable. `openBrowser(url: string): void` from `./open.js`.
+
+- [ ] **Step 0: Make `ServerHandle.close()` actually finish**
+
+This task wires `SIGINT` to `close()`, so a `close()` that never settles reads to the
+user as Ctrl-C hanging the terminal. Review of Task 5 measured exactly that: with a
+client that had sent request headers but no body, or after an aborted SSE stream,
+`close()` was still pending after 3 seconds, because `server.close()` stops accepting
+and then _waits_ for existing connections.
+
+Apply the amended `close()` from Task 5's Step 3 code block (it now calls
+`server.closeAllConnections()` after registering the close callback), and add the
+`describe('shutdown')` test from Task 5's Step 1 block, which opens a half-sent request
+and asserts `close()` returns in under a second.
+
+Do this first: everything else in this task depends on teardown working.
 
 - [ ] **Step 1: Implement `cli/open.ts`**
 
