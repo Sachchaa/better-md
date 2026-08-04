@@ -4,6 +4,7 @@ import { newId } from './lib/id'
 import { resolveFileName } from './lib/filename'
 import { SEG_ON, SEG_OFF, TB_BTN, LABEL } from './ui/classes'
 import type { SourceEvent } from './lib/docSource'
+import { flushSync } from 'react-dom'
 import { ConflictBanner, SaveErrorBanner } from './ui/ConflictBanner'
 import type { FileDoc, Layout, Props, Side, State } from './types'
 
@@ -53,13 +54,29 @@ export default class App extends React.Component<Props, State> {
   componentDidMount(): void {
     void this.loadFromSource()
     document.addEventListener('keydown', this.onGlobalKey)
+    window.addEventListener('beforeunload', this.onBeforeUnload)
     this.unsubscribe = this.props.source.subscribe(this.onExternalChange)
     this.renderPreview()
   }
 
   componentWillUnmount(): void {
     document.removeEventListener('keydown', this.onGlobalKey)
+    window.removeEventListener('beforeunload', this.onBeforeUnload)
     this.unsubscribe?.()
+  }
+
+  /**
+   * Warn before discarding unsaved edits to real files. Save is explicit by
+   * design, so without this an accidental Cmd+W silently throws away edits to
+   * something like a plan in ~/.claude/plans. Only meaningful when the source
+   * can save; the browser-only app has nothing on disk to lose.
+   */
+  onBeforeUnload = (e: BeforeUnloadEvent): void => {
+    if (!this.props.source.canSave) return
+    if (!Object.values(this.state.dirty).some(Boolean)) return
+    e.preventDefault()
+    // Legacy assignment: some browsers still require it to show the prompt.
+    e.returnValue = ''
   }
 
   /** Populate files from the source. Runs once on mount. */
@@ -83,13 +100,20 @@ export default class App extends React.Component<Props, State> {
     // (which write() would interpret as "create a new file" and reject).
     const baseMtimeMs: Record<string, number | null> = {}
     for (const doc of listing.files) baseMtimeMs[doc.relPath] = doc.mtimeMs
-    this.setState({
-      files,
-      activeId: active.id,
-      md: active.content,
-      baseMtimeMs,
-      loading: false,
-      editingSide: 'init',
+    // flushSync so a source that resolves immediately commits before the browser
+    // paints, which keeps the browser-only app rendering its samples with no
+    // visible "Loading documents…" frame. For the server source the continuation
+    // lands a macrotask later, so this is effectively a no-op there and the
+    // loading state still shows. One code path, both sources.
+    flushSync(() => {
+      this.setState({
+        files,
+        activeId: active.id,
+        md: active.content,
+        baseMtimeMs,
+        loading: false,
+        editingSide: 'init',
+      })
     })
   }
 
@@ -105,12 +129,35 @@ export default class App extends React.Component<Props, State> {
   }
 
   saveActive = async (): Promise<void> => {
+    // Never two writes in flight for one document. Both would carry the same
+    // baseMtimeMs, so the first bumps the mtime and the second 409s against a
+    // change the user themselves just made — producing a conflict banner whose
+    // "theirContent" IS the user's own text. Cmd+S auto-repeat is enough to
+    // trigger it, and once conflict resolution lands, taking that stale
+    // "theirs" over a newer buffer is real data loss.
+    if (this.state.saving) return
+
     const file = this.activeFile()
-    if (file === undefined || file.relPath === undefined) return
+    // No file at all: still loading. Silent is right — there is nothing to say.
+    if (file === undefined) return
+
     if (!this.props.source.canSave) {
       this.setState({ saveError: 'This document is not backed by a file on disk.' })
       return
     }
+
+    // A document created in the editor (+ button, drag-and-drop) has no relPath,
+    // so there is nowhere on disk to put it. Say so. Returning silently here
+    // means Cmd+S does nothing at all — no write, no error, and no dirty flag,
+    // since setMd cannot track an untracked document — and the user's text is
+    // lost on reload with no indication it was ever at risk.
+    if (file.relPath === undefined) {
+      this.setState({
+        saveError: `"${file.name}" is not backed by a file on disk. Use Export to save it.`,
+      })
+      return
+    }
+
     const relPath = file.relPath
     this.setState({ saving: true, saveError: null })
     const result = await this.props.source.save(
@@ -123,6 +170,9 @@ export default class App extends React.Component<Props, State> {
         saving: false,
         dirty: { ...s.dirty, [relPath]: false },
         baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
+        // A successful write settles any conflict on THIS document. Guarded by
+        // relPath so an unresolved conflict on another document survives.
+        conflict: s.conflict?.relPath === relPath ? null : s.conflict,
       }))
       return
     }
@@ -411,6 +461,11 @@ export default class App extends React.Component<Props, State> {
     return f ? f.name : 'untitled.md'
   }
 
+  /** True when file-management actions would only affect in-memory state. */
+  private diskBacked(): boolean {
+    return this.props.source.canSave
+  }
+
   /** Sidebar / tab row: a select button plus a sibling delete button.
    * Two distinct buttons (never nested) keeps it valid + keyboard-accessible. */
   /** Autofocusing input shown in place of the file name while renaming.
@@ -449,6 +504,9 @@ export default class App extends React.Component<Props, State> {
   private renderFileRow(f: FileDoc, variant: 'list' | 'tab') {
     const active = f.id === this.state.activeId
     const renaming = this.state.renamingId === f.id
+    // Rename and delete only ever touch in-memory state; on a disk-backed
+    // source they'd lie (see diskBacked()'s docstring), so hide them there.
+    const canManage = !this.diskBacked()
     const dot =
       'w-[7px] h-[7px] rounded-full shrink-0 ' +
       (active ? 'bg-[var(--accent)]' : 'bg-[var(--faint)]')
@@ -474,7 +532,7 @@ export default class App extends React.Component<Props, State> {
               <button
                 type="button"
                 onClick={() => this.switchFile(f.id)}
-                onDoubleClick={() => this.startRename(f.id)}
+                onDoubleClick={canManage ? () => this.startRename(f.id) : undefined}
                 aria-current={active ? 'true' : undefined}
                 className="flex-1 min-w-0 flex items-center gap-[8px] px-[9px] py-[7px] bg-transparent border-0 cursor-pointer text-left text-inherit font-[inherit]"
               >
@@ -483,24 +541,28 @@ export default class App extends React.Component<Props, State> {
                   {f.name}
                 </span>
               </button>
-              <button
-                type="button"
-                onClick={() => this.startRename(f.id)}
-                aria-label={`Rename ${f.name}`}
-                title="Rename"
-                className={iconBtn}
-              >
-                ✎
-              </button>
-              <button
-                type="button"
-                onClick={() => this.deleteFile(f.id)}
-                aria-label={`Delete ${f.name}`}
-                title="Delete"
-                className={del}
-              >
-                ×
-              </button>
+              {canManage && (
+                <button
+                  type="button"
+                  onClick={() => this.startRename(f.id)}
+                  aria-label={`Rename ${f.name}`}
+                  title="Rename"
+                  className={iconBtn}
+                >
+                  ✎
+                </button>
+              )}
+              {canManage && (
+                <button
+                  type="button"
+                  onClick={() => this.deleteFile(f.id)}
+                  aria-label={`Delete ${f.name}`}
+                  title="Delete"
+                  className={del}
+                >
+                  ×
+                </button>
+              )}
             </>
           )}
         </li>
@@ -524,7 +586,7 @@ export default class App extends React.Component<Props, State> {
             <button
               type="button"
               onClick={() => this.switchFile(f.id)}
-              onDoubleClick={() => this.startRename(f.id)}
+              onDoubleClick={canManage ? () => this.startRename(f.id) : undefined}
               aria-current={active ? 'true' : undefined}
               className="flex items-center gap-[7px] pl-[12px] pr-[7px] h-full bg-transparent border-0 cursor-pointer text-inherit font-[inherit]"
             >
@@ -533,15 +595,17 @@ export default class App extends React.Component<Props, State> {
                 {f.name}
               </span>
             </button>
-            <button
-              type="button"
-              onClick={() => this.deleteFile(f.id)}
-              aria-label={`Delete ${f.name}`}
-              title="Delete"
-              className={del}
-            >
-              ×
-            </button>
+            {canManage && (
+              <button
+                type="button"
+                onClick={() => this.deleteFile(f.id)}
+                aria-label={`Delete ${f.name}`}
+                title="Delete"
+                className={del}
+              >
+                ×
+              </button>
+            )}
           </>
         )}
       </div>
@@ -585,7 +649,7 @@ export default class App extends React.Component<Props, State> {
     const syncLabel = this.props.syncScroll === false ? 'Sync scroll off' : 'Sync scroll on'
 
     return (
-      <div data-theme={theme} style={rootStyle}>
+      <div data-theme={theme} style={rootStyle} className="flex flex-col">
         {this.state.conflict !== null && (
           <ConflictBanner
             fileName={this.state.conflict.relPath}
@@ -606,7 +670,7 @@ export default class App extends React.Component<Props, State> {
           </div>
         )}
         <div
-          className="flex flex-col h-screen bg-[var(--bg)] text-[var(--fg)] font-sans relative"
+          className="flex flex-col flex-1 min-h-0 bg-[var(--bg)] text-[var(--fg)] font-sans relative"
           onDragOver={this.onDragOver}
           onDragLeave={this.onDragLeave}
           onDrop={this.onDrop}
