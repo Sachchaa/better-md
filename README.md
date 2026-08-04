@@ -6,7 +6,7 @@ Originally prototyped in Claude Design, then implemented as a real app.
 ## Stack
 
 - **pnpm** — package manager
-- **Vite** + **React 18** — app + dev server
+- **Vite** + **React 19** — app + dev server
 - **TypeScript** (strict)
 - **Tailwind CSS v4** — styling (theme tokens driven by CSS variables)
 
@@ -25,20 +25,26 @@ Originally prototyped in Claude Design, then implemented as a real app.
 ```bash
 pnpm install
 pnpm dev          # start the dev server
-pnpm build        # typecheck (tsc) + production build
+pnpm build        # typecheck (tsc) + production build (dist/)
+pnpm build:cli    # compile the CLI (dist-cli/) and chmod its entry point so the
+                  # package.json `bin: better-md` is directly executable
 pnpm preview      # preview the production build
 
 pnpm test         # run unit tests (Vitest)
+pnpm test:e2e     # Playwright end-to-end tests — needs `pnpm build` AND
+                  # `pnpm build:cli` first: it spawns dist-cli/index.js, which
+                  # serves dist/
 pnpm lint         # ESLint
 pnpm format       # Prettier (write)
 ```
 
 ## Opening files from disk
 
-Build once, then point the CLI at a file or directory:
+Build both targets once, then point the CLI at a file or directory:
 
 ```bash
-pnpm build                     # the CLI serves the built bundle
+pnpm build                     # dist/ — what the CLI serves as static assets
+pnpm build:cli                 # dist-cli/ — the CLI itself
 node dist-cli/index.js notes.md
 ```
 
@@ -57,6 +63,7 @@ index.html          # entry HTML (loads /src/main.tsx)
 src/
   main.tsx          # React root
   App.tsx           # Markdown Dashboard component (UI + state)
+  App.test.tsx      # App-level tests: the source is a fake DocSource, not a mock
   types.ts          # shared TypeScript types
   index.css         # Tailwind import + theme tokens (light/dark CSS variables)
   lib/
@@ -64,12 +71,27 @@ src/
     markdown.test.ts# unit tests for the markdown engine
     samples.ts      # seed documents
     id.ts           # collision-free file ids
+    docSource.ts    # DocSource interface + LocalDocSource (browser-only, in-memory)
+    serverDocSource.ts # DocSource backed by the CLI's HTTP API + SSE
+    conflictResolution.ts # pure helpers behind the save/reload conflict logic
+    detectSource.ts  # chooses Local vs Server at boot from the URL token
   ui/
     classes.ts      # shared Tailwind class fragments
+    ConflictBanner.tsx # conflict / save-error banners
+cli/                 # the `better-md` CLI — argv to a served, token-guarded HTTP API
+  args.ts           # argv -> {target, plan, port, open}
+  resolve.ts        # args -> workspace descriptor {root, files[], active}
+  workspace.ts      # the only module that touches file contents; path confinement lives here
+  watch.ts          # fs.watch, debounced, emits change events
+  server.ts         # node:http static serving + JSON API + SSE
+  index.ts          # wiring, browser open, SIGINT teardown
+e2e/
+  cli-bridge.spec.ts # Playwright: spawns the CLI, drives the browser, asserts disk state
 vite.config.ts      # Vite + React + Tailwind plugins
-vitest.config.ts    # test config (jsdom)
+vitest.workspace.ts # test config: separate `app` (jsdom) and `cli` (node) projects
+playwright.config.ts # end-to-end test config
 eslint.config.js    # ESLint flat config
-tsconfig*.json      # TypeScript project config (strict)
+tsconfig*.json      # TypeScript project config (strict), one per build target
 ```
 
 ## Security note
@@ -92,6 +114,10 @@ the file API:
 3. **Path confinement** — only bare filenames with a `.md`, `.markdown`, or `.txt`
    extension resolving inside the workspace root are readable or writable, symlinks
    included.
+
+Confinement is path-based, so a **hardlink** inside the workspace pointing at a file
+outside it is not detected — unlike a symlink, it resolves to a distinct inode with no
+path to inspect, and writes to it go straight through to the linked-to file.
 
 Saves are guarded by an mtime check: if the file changed on disk since it was loaded,
 the write is refused and you choose which version wins.

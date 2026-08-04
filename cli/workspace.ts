@@ -26,6 +26,33 @@ export class ConflictError extends Error {
  */
 export class NotFoundError extends Error {}
 
+/**
+ * Thrown when a write fails for a reason the operator (not the requester) needs
+ * to fix — permissions, a read-only mount, or a full disk. Distinct from
+ * PathError so the HTTP layer can answer with `status` and a message naming
+ * `relPath` rather than letting the raw errno escape: that message embeds the
+ * absolute path on disk, which the server must never hand back to the browser.
+ */
+export class WriteError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    options?: ErrorOptions
+  ) {
+    super(message, options)
+  }
+}
+
+/** Recognised write-failure errnos, and the safe (no-absolute-path) reason to
+ * report for each. Anything else is left to escape as an unclassified error. */
+const WRITE_ERRNO_REASONS: Record<string, { reason: string; status: number }> = {
+  EACCES: { reason: 'permission denied', status: 403 },
+  EPERM: { reason: 'operation not permitted', status: 403 },
+  EROFS: { reason: 'the filesystem is read-only', status: 403 },
+  ENOSPC: { reason: 'no space left on device', status: 507 },
+  EDQUOT: { reason: 'disk quota exceeded', status: 507 },
+}
+
 export interface DocRead {
   relPath: string
   content: string
@@ -216,11 +243,29 @@ export class Workspace {
     if (baseMtimeMs !== null && current === null) {
       throw new ConflictError('file no longer exists on disk', null)
     }
-    if (baseMtimeMs !== null && current !== null && Math.abs(current - baseMtimeMs) > 1) {
+    if (baseMtimeMs !== null && current !== null && current !== baseMtimeMs) {
       throw new ConflictError('file changed on disk since it was loaded', current)
     }
 
-    await fs.writeFile(abs, content, 'utf8')
+    try {
+      await fs.writeFile(abs, content, 'utf8')
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      const mapped = code !== undefined ? WRITE_ERRNO_REASONS[code] : undefined
+      // A read-only file, read-only mount, or full disk must reach the user as
+      // something they can act on, not a generic "internal server error" — but
+      // the raw errno message embeds the absolute path on disk, which the server
+      // must never hand back to a browser. relPath (client-supplied, already
+      // validated above) is the only path-like detail this message may carry.
+      // The original error rides along as `cause` so the operator's own log —
+      // which is not a security boundary — can still show the real path.
+      if (mapped !== undefined) {
+        throw new WriteError(`could not save ${relPath}: ${mapped.reason}`, mapped.status, {
+          cause: err,
+        })
+      }
+      throw err
+    }
     return { mtimeMs: (await fs.stat(abs)).mtimeMs }
   }
 }

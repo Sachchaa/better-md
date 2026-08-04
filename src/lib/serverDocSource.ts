@@ -38,7 +38,7 @@ export class ServerDocSource implements DocSource {
       files: Array<{ name: string; relPath: string }>
       active: string
     }>(`${this.origin}/api/workspace`)
-    const files = await Promise.all(
+    const settled = await Promise.allSettled(
       listing.files.map(async (file) => {
         // read() already returns the mtime — keep it rather than re-fetching.
         const doc = await this.read(file.relPath)
@@ -50,7 +50,13 @@ export class ServerDocSource implements DocSource {
         }
       })
     )
-    return { files, active: listing.active }
+    // One unreadable document must not cost the user the whole workspace. Drop the
+    // failures and report them; the readable ones still open.
+    const files = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+    const unreadable = listing.files
+      .filter((f) => !files.some((k) => k.relPath === f.relPath))
+      .map((f) => f.relPath)
+    return { files, active: listing.active, unreadable }
   }
 
   async read(relPath: string): Promise<DocRead> {

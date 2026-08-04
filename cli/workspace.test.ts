@@ -155,6 +155,19 @@ describe('Workspace writes', () => {
     await expect(ws.write('notes.md', 'mine', before.mtimeMs - 5000)).rejects.toThrow(ConflictError)
   })
 
+  // The comparison used to tolerate up to 1ms (Math.abs(current - base) > 1),
+  // justified as absorbing filesystem timestamp granularity. Measured false on
+  // this platform (fstat and path-stat agreed 300/300) and it permitted a
+  // silent lost update: a save one tick stale would pass instead of conflict.
+  // A base just 1ms off disk must now conflict, not slip through.
+  it('throws ConflictError for a base mtime just 1ms off, not only far off', async () => {
+    const { ws } = await fixture()
+    const before = await ws.read('notes.md')
+
+    await expect(ws.write('notes.md', 'mine', before.mtimeMs - 1)).rejects.toThrow(ConflictError)
+    await expect(ws.write('notes.md', 'mine', before.mtimeMs + 1)).rejects.toThrow(ConflictError)
+  })
+
   it('creates a new file when baseMtimeMs is null', async () => {
     const { root, ws } = await fixture()
     await ws.write('fresh.md', 'brand new', null)

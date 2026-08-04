@@ -313,9 +313,9 @@ describe('malformed request targets', () => {
 })
 
 describe('error handling', () => {
-  // Workspace.write lets fs.writeFile errors through raw, and a raw errno message
-  // embeds the absolute path. The 500 body must never carry it.
-  it('does not leak filesystem paths in a 500', async () => {
+  // A read-only file must reach the client as an actionable, relPath-only
+  // message — not a generic 500, and never carrying the absolute path.
+  it('maps a permission-denied write to a 403 naming relPath, not the absolute path', async () => {
     const { handle, root, logs } = await harness()
     const target = path.join(root, 'notes.md')
     const mtimeMs = (await fs.stat(target)).mtimeMs
@@ -329,13 +329,15 @@ describe('error handling', () => {
       body: JSON.stringify({ relPath: 'notes.md', content: 'nope', baseMtimeMs: mtimeMs }),
     })
 
-    expect(res.status).toBe(500)
-    const text = await res.text()
-    expect(text).not.toContain(root)
-    expect(text).not.toContain(os.tmpdir())
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toContain('notes.md')
+    expect(body.error).not.toContain(root)
+    expect(body.error).not.toContain(os.tmpdir())
 
-    // The operator DOES get the detail — that asymmetry is the point, and it is
-    // the only assertion that proves the detail was not simply discarded.
+    // The operator DOES get the full detail, including the real path — that
+    // asymmetry is the point, and it is the only assertion that proves the
+    // detail was not simply discarded.
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain('EACCES')
     expect(logs[0]).toContain(target)

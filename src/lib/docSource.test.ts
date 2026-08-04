@@ -13,6 +13,9 @@ describe('LocalDocSource', () => {
     expect(listing.files[0].content.length).toBeGreaterThan(0)
     // Not disk-backed, so there is no mtime to compare saves against.
     expect(listing.files.every((f) => f.mtimeMs === null)).toBe(true)
+    // Every sample is always readable; ServerDocSource is the one that can
+    // drop entries here.
+    expect(listing.unreadable).toEqual([])
   })
 
   it('reads a listed document', async () => {

@@ -67,6 +67,42 @@ describe('ServerDocSource', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
+  it('drops an unreadable document instead of failing the whole listing', async () => {
+    // The reproduction that needs no unusual filesystem state at all: a file
+    // removed between the CLI resolving its descriptor and the browser calling
+    // list(). Under the old Promise.all, this one rejection failed every file.
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/api/workspace')) {
+        return jsonResponse({
+          files: [
+            { name: 'bad.md', relPath: 'bad.md' },
+            { name: 'good.md', relPath: 'good.md' },
+          ],
+          active: 'bad.md',
+        })
+      }
+      const relPath = new URL(input).searchParams.get('path')
+      if (relPath === 'bad.md') {
+        return jsonResponse({ error: 'no such document: bad.md' }, 404)
+      }
+      return jsonResponse({ relPath, content: `body of ${relPath}`, mtimeMs: 100 })
+    })
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const listing = await source.list()
+
+    expect(listing.files).toEqual([
+      { name: 'good.md', relPath: 'good.md', content: 'body of good.md', mtimeMs: 100 },
+    ])
+    expect(listing.unreadable).toEqual(['bad.md'])
+    // The listing itself must still resolve rather than reject.
+    expect(listing.active).toBe('bad.md')
+  })
+
   it('returns ok on a successful save', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ mtimeMs: 999 }))
     const source = new ServerDocSource(

@@ -41,6 +41,13 @@ export interface State {
   renamingId: string | null
   /** True until the first list() resolves. */
   loading: boolean
+  /**
+   * Set when the initial `list()` itself rejects (as opposed to individual
+   * documents within it, which surface through `saveError` instead). Once
+   * set, loading is false but there is nothing to render — no files, no
+   * active document — so the loading screen must not simply stay up forever.
+   */
+  loadError: string | null
   /** relPath → has unsaved edits. */
   dirty: Record<string, boolean>
   /** relPath → mtime the content was loaded at, or null for non-disk docs. */

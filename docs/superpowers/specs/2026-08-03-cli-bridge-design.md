@@ -153,9 +153,36 @@ Every failure must be legible from a terminal:
 - **Directory with no markdown** — names the directory and the extensions searched.
 - **`--port` in use** — explicit `EADDRINUSE` message naming the port. Cannot occur without `--port`, since the default is `:0`.
 - **Browser fails to open** — print the URL and keep serving. Never fatal.
-- **Save fails** (permissions, disk full) — `500` carrying the OS message; the app surfaces it and keeps the buffer dirty. Edits are never silently dropped.
+- **Save fails** (permissions, disk full) — mapped to a safe, actionable status and message naming the client-supplied `relPath` (403 for a permission/read-only failure, 507 for out of space); never the raw OS message, which embeds the absolute path on disk. The app surfaces it and keeps the buffer dirty. Edits are never silently dropped.
 - **SSE drops** — reconnect with backoff, and display a muted "not watching" indicator while disconnected rather than implying the view is live.
 - **File deleted externally** — keep the buffer, mark it as no longer on disk; saving recreates it.
+
+## Known limitations
+
+Deliberate deferrals, not oversights:
+
+- **Single `conflict` slot** — `App.state.conflict` holds at most one pending conflict. A
+  second document changing on disk while the first conflict is still unresolved has its
+  banner overwritten. Self-heals: resolving (or reloading) either document re-runs the
+  same check, so nothing is silently lost, and a workspace of real files rarely has two
+  simultaneous unresolved conflicts.
+- **A file created after boot does not appear until restart** — the workspace descriptor
+  is resolved once, at CLI startup; `watch.ts` notifies on changes to files it already
+  knows about, not on new arrivals. Restarting the CLI re-resolves the directory.
+- **No SSE heartbeat** — `/api/events` relies on the underlying TCP connection dropping to
+  detect disconnection. A silently wedged intermediary (rare on `127.0.0.1`, since there
+  is nothing to wedge) could delay the "not watching" indicator.
+- **Hardlinks are not detected** — path confinement is necessarily path-based. A hardlink
+  inside the workspace pointing at a file outside it resolves to a distinct inode with no
+  path to inspect, unlike a symlink, so `Workspace`'s checks do not see it and a write
+  goes straight through to the linked-to file.
+- **`Workspace.write` truncates and writes in place, rather than write-temp-then-rename.**
+  Considered and rejected: `rename` onto the resolved path would replace the target
+  inode, which breaks any other hardlink inside the workspace root pointing at the same
+  file (they would keep the old inode's contents, not the new write) and drops
+  filesystem extended attributes the original inode carried. Truncate-then-write keeps
+  the same inode, so both are preserved. This is a deliberate trade against a shorter
+  window where a reader could observe a partially-written file, not an oversight.
 
 ## Testing
 

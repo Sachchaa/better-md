@@ -50,6 +50,13 @@ export interface DocListing {
   files: DocFile[]
   /** relPath to open first. For --plan this is the newest plan, not the first. */
   active: string
+  /**
+   * relPaths the source could list but not read (deleted between listing and
+   * reading, a dangling symlink, a mode-000 file...). One unreadable document
+   * must not cost the user the whole workspace, so these are dropped from
+   * `files` rather than failing the listing outright; the caller surfaces them.
+   */
+  unreadable: string[]
 }
 
 export interface ChangeEvent {
@@ -98,7 +105,7 @@ export class LocalDocSource implements DocSource {
   private docs: DocFile[] = SAMPLES.map((doc) => ({ ...doc }))
 
   async list(): Promise<DocListing> {
-    return { files: this.docs.map((doc) => ({ ...doc })), active: 'README.md' }
+    return { files: this.docs.map((doc) => ({ ...doc })), active: 'README.md', unreadable: [] }
   }
 
   async read(relPath: string): Promise<DocRead> {

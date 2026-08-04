@@ -3,7 +3,7 @@ import { mdToHtml, htmlToMd } from './lib/markdown'
 import { newId } from './lib/id'
 import { resolveFileName } from './lib/filename'
 import { SEG_ON, SEG_OFF, TB_BTN, LABEL } from './ui/classes'
-import type { SourceEvent } from './lib/docSource'
+import type { DocListing, SourceEvent } from './lib/docSource'
 import { decideTakeTheirs, isOwnEcho } from './lib/conflictResolution'
 import { flushSync } from 'react-dom'
 import { ConflictBanner, SaveErrorBanner } from './ui/ConflictBanner'
@@ -42,6 +42,7 @@ export default class App extends React.Component<Props, State> {
       dragOver: false,
       renamingId: null,
       loading: true,
+      loadError: null,
       dirty: {},
       baseMtimeMs: {},
       conflict: null,
@@ -83,19 +84,39 @@ export default class App extends React.Component<Props, State> {
 
   /** Populate files from the source. Runs once on mount. */
   private async loadFromSource(): Promise<void> {
-    const listing = await this.props.source.list()
+    let listing: DocListing
+    try {
+      listing = await this.props.source.list()
+    } catch (err) {
+      // Never leave the app on the loading screen. Without this the user sees
+      // "Loading documents…" forever with no clue and no recovery but restarting.
+      this.setState({
+        loading: false,
+        loadError: err instanceof Error ? err.message : 'Could not load documents.',
+      })
+      return
+    }
     const files: FileDoc[] = listing.files.map((doc) => ({
       id: newId(),
       name: doc.name,
       content: doc.content,
       relPath: doc.relPath,
     }))
+    // Individual documents that could be listed but not read (deleted between
+    // listing and reading, a dangling symlink...) must not cost the user the
+    // rest of the workspace — but they must not vanish silently either.
+    const unreadableNote =
+      listing.unreadable.length > 0
+        ? `Could not open ${listing.unreadable.join(', ')}. The rest of the workspace is still available.`
+        : null
     if (files.length === 0) {
-      this.setState({ loading: false })
+      this.setState({ loading: false, saveError: unreadableNote })
       return
     }
     // Honour the source's chosen active document — for --plan that is the
-    // newest plan, which is the whole point of the flag.
+    // newest plan, which is the whole point of the flag. Falls back to
+    // files[0] both when the source omits `active` and when the document it
+    // named turned out to be unreadable and was dropped above.
     const active = files.find((f) => f.relPath === listing.active) ?? files[0]
     // Seed the conflict-check baselines from the listing itself, so a save
     // immediately after boot compares against a real mtime rather than null
@@ -115,6 +136,7 @@ export default class App extends React.Component<Props, State> {
         baseMtimeMs,
         loading: false,
         editingSide: 'init',
+        saveError: unreadableNote,
       })
     })
   }
@@ -296,7 +318,17 @@ export default class App extends React.Component<Props, State> {
    */
   private async reloadFromDisk(relPath: string): Promise<void> {
     const doc = await this.props.source.read(relPath).catch(() => null)
-    if (doc === null) return
+    if (doc === null) {
+      // Read failed — most likely deleted while we were not watching. Treat it the
+      // same as an in-band 'removed': the buffer may now be the only copy, so it
+      // must be dirty and the unload prompt must fire.
+      this.setState((s) => ({
+        baseMtimeMs: { ...s.baseMtimeMs, [relPath]: null },
+        dirty: { ...s.dirty, [relPath]: true },
+        saveError: `${relPath} could not be read. It may have been deleted; saving will recreate it.`,
+      }))
+      return
+    }
 
     // Ignore the echo of our own write. The CLI watches the workspace and
     // notifies on ANY change, including the one this app just made, so every
@@ -792,6 +824,21 @@ export default class App extends React.Component<Props, State> {
       return (
         <div className="grid min-h-screen place-items-center" style={{ color: 'var(--muted)' }}>
           Loading documents…
+        </div>
+      )
+    }
+
+    if (this.state.loadError !== null) {
+      return (
+        <div
+          role="alert"
+          className="grid min-h-screen place-items-center p-8 text-center"
+          style={{ color: 'var(--muted)' }}
+        >
+          <div>
+            <p className="font-medium text-[var(--fg)]">Could not load documents</p>
+            <p className="mt-[6px] text-[13px]">{this.state.loadError}</p>
+          </div>
         </div>
       )
     }

@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
 import type { WatchEvent } from './types.js'
-import { ConflictError, NotFoundError, PathError, type Workspace } from './workspace.js'
+import { ConflictError, NotFoundError, PathError, WriteError, type Workspace } from './workspace.js'
 
 export interface ServerOptions {
   workspace: Workspace
@@ -283,7 +283,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       // even when the response is already partly on the wire and only res.end()
       // is possible below.
       const isExpected =
-        err instanceof BadRequestError || err instanceof PathError || err instanceof NotFoundError
+        err instanceof BadRequestError ||
+        err instanceof PathError ||
+        err instanceof NotFoundError ||
+        // Logged in its own branch below, with the extra cause detail — not here.
+        err instanceof WriteError
       if (!isExpected) {
         log(`unhandled request error: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -307,9 +311,21 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         sendJson(res, 404, { error: err.message })
         return
       }
-      // Already logged above. Never return the detail: raw errno messages embed
-      // absolute paths (Workspace.write lets EACCES through from fs.writeFile),
-      // which would disclose where the workspace lives.
+      // A read-only file, read-only mount, or full disk is an operational
+      // condition the user can act on, so — unlike the generic case below —
+      // its message IS returned to the client. It names only the
+      // client-supplied relPath, never the absolute path; that full detail
+      // (useful to the operator debugging their own machine, not a security
+      // boundary) goes to the log instead via `cause`.
+      if (err instanceof WriteError) {
+        const causeDetail = err.cause instanceof Error ? ` (${err.cause.message})` : ''
+        log(`write failed: ${err.message}${causeDetail}`)
+        sendJson(res, err.status, { error: err.message })
+        return
+      }
+      // Already logged above. Never return the detail: an unclassified error's
+      // raw message may embed the absolute path on disk, which would disclose
+      // where the workspace lives.
       sendJson(res, 500, { error: 'internal server error' })
     })
   })
