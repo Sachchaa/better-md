@@ -4008,6 +4008,46 @@ pnpm add -D @playwright/test
 pnpm exec playwright install chromium
 ```
 
+- [ ] **Step 1b: Bring `e2e/` under typecheck**
+
+No tsconfig project includes `e2e/` or `playwright.config.ts`, so a blatant type error in
+either passes `pnpm typecheck` and `pnpm lint` with exit 0 — verified empirically. This is
+the same gap this plan already closed for `cli/**/*.test.ts` with `tsconfig.cli-test.json`;
+reuse that pattern rather than inventing a new one. An E2E spec that is never typechecked
+is precisely where a silent breakage hides.
+
+Create `tsconfig.e2e.json`:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true
+  },
+  "include": ["e2e/**/*.ts", "playwright.config.ts"]
+}
+```
+
+Add the reference to `tsconfig.json`:
+
+```json
+{ "path": "./tsconfig.e2e.json" }
+```
+
+Prove it works the same way Task 1's equivalent was proved: put
+`const bad: number = 'x'` in the spec, confirm `pnpm typecheck` now **fails**, remove it,
+confirm it passes again. A config that compiles but still misses the files looks identical
+to a working one without that check.
+
 - [ ] **Step 2: Create `playwright.config.ts`**
 
 ```ts
@@ -4088,7 +4128,6 @@ test('edits made in the browser save back to the file on disk', async ({ page })
   const editor = page.locator('textarea')
   await expect(editor).toHaveValue(/# hello/)
 
-  await editor.click()
   await editor.fill('# hello from playwright\n')
 
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
@@ -4113,7 +4152,12 @@ test('loading without a token falls back to sample documents', async ({ page }) 
   const before = await fs.readFile(path.join(workdir, 'hello.md'), 'utf8')
   await page.locator('textarea').fill('should not reach disk')
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
-  await page.waitForTimeout(1_000)
+
+  // Wait on the app's actual response, not a sleep. The save-error banner is
+  // observable proof that Cmd+S was handled and refused; a fixed timeout would
+  // silently start passing for the wrong reason if this path ever became async,
+  // reading the file before a delayed write landed.
+  await expect(page.getByRole('alert')).toContainText('not backed by a file on disk')
 
   expect(await fs.readFile(path.join(workdir, 'hello.md'), 'utf8')).toBe(before)
 })
