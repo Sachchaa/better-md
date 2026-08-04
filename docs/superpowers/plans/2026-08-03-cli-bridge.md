@@ -2521,8 +2521,15 @@ export interface SaveOk {
 export interface SaveConflict {
   ok: false
   reason: 'conflict'
-  theirContent: string
-  theirMtimeMs: number
+  /**
+   * The on-disk version, or null when the document vanished entirely — the
+   * server sends null for that case. Deliberately NOT coalesced to '': a
+   * "take theirs" action on an empty string would overwrite the user's text
+   * with nothing. null means "there is no theirs", which the UI must handle
+   * as keep-yours rather than as an empty document.
+   */
+  theirContent: string | null
+  theirMtimeMs: number | null
 }
 
 export interface SaveFailed {
@@ -2689,6 +2696,11 @@ describe('ServerDocSource', () => {
       { name: 'b.md', relPath: 'b.md', content: 'body of b.md', mtimeMs: 100 },
     ])
     expect(listing.active).toBe('b.md')
+
+    // One /api/workspace + one /api/doc per file, and no more. Without this the
+    // test would still pass if someone reintroduced a separate mtime fetch —
+    // the exact regression the mtimeMs-in-listing design exists to prevent.
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
   it('returns ok on a successful save', async () => {
@@ -2776,6 +2788,59 @@ describe('ServerDocSource', () => {
     // 'connected' lands first so the UI can show a live indicator.
     expect(seen[0]).toEqual({ type: 'connected' })
     expect(seen.find((e) => e.type === 'changed')).toEqual({ type: 'changed', relPath: 'a.md' })
+  })
+
+  it('cancels the reconnect backoff timer on unsubscribe', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 500 }))
+      const source = new ServerDocSource(
+        'http://127.0.0.1:1',
+        'tok',
+        fetchImpl as unknown as typeof fetch
+      )
+
+      const seen: SourceEvent[] = []
+      const unsubscribe = source.subscribe((event) => seen.push(event))
+
+      // Let the failing fetch settle so the loop reaches its backoff sleep.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(seen).toContainEqual({ type: 'disconnected' })
+      expect(vi.getTimerCount()).toBe(1)
+
+      unsubscribe()
+
+      // The point: cancelled, not merely muted. Without clearTimeout the timer
+      // would still be pending here and `stopped` would only block the next
+      // iteration — indistinguishable from correct behaviour by any other
+      // assertion.
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('passes a null theirContent through instead of inventing empty content', async () => {
+    // The server sends theirContent: null when the document vanished entirely.
+    // Coalescing that to '' would let a "take theirs" action overwrite the
+    // user's text with nothing, so null must survive the mapping.
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ error: 'gone', theirContent: null, theirMtimeMs: null }, 409)
+    )
+    const source = new ServerDocSource(
+      'http://127.0.0.1:1',
+      'tok',
+      fetchImpl as unknown as typeof fetch
+    )
+
+    const result = await source.save('a.md', 'mine', 100)
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'conflict',
+      theirContent: null,
+      theirMtimeMs: null,
+    })
   })
 
   it('reports disconnection when the stream fails', async () => {
@@ -2874,7 +2939,10 @@ export class ServerDocSource implements DocSource {
         body: JSON.stringify({ relPath, content, baseMtimeMs }),
       })
       if (res.status === 409) {
-        const body = (await res.json()) as { theirContent: string; theirMtimeMs: number }
+        const body = (await res.json()) as {
+          theirContent: string | null
+          theirMtimeMs: number | null
+        }
         return {
           ok: false,
           reason: 'conflict',
@@ -2905,6 +2973,7 @@ export class ServerDocSource implements DocSource {
     let stopped = false
     let attempt = 0
     let controller: AbortController | null = null
+    let backoffTimer: ReturnType<typeof setTimeout> | null = null
 
     const run = async (): Promise<void> => {
       while (!stopped) {
@@ -2941,10 +3010,28 @@ export class ServerDocSource implements DocSource {
           // Fall through to the backoff below.
         }
         if (stopped) return
-        callback({ type: 'disconnected' })
+
+        // Inside a try: a subscriber callback that throws must not become an
+        // unhandled rejection out of the fire-and-forget `void run()` below.
+        try {
+          callback({ type: 'disconnected' })
+        } catch {
+          // A broken subscriber is not the stream's problem.
+        }
+
         attempt += 1
         const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS)
-        await new Promise((resolve) => setTimeout(resolve, delay))
+        // Hold the handle so unsubscribe can cancel it. `stopped` alone would
+        // stop the next iteration, but the timer itself would stay pending —
+        // the same "muted, not cancelled" gap the watcher had to fix earlier in
+        // this plan, and in a browser a repeatedly mounted component would
+        // accumulate one live timer per unsubscribe.
+        await new Promise<void>((resolve) => {
+          backoffTimer = setTimeout(() => {
+            backoffTimer = null
+            resolve()
+          }, delay)
+        })
       }
     }
 
@@ -2953,6 +3040,10 @@ export class ServerDocSource implements DocSource {
     return () => {
       stopped = true
       controller?.abort()
+      if (backoffTimer !== null) {
+        clearTimeout(backoffTimer)
+        backoffTimer = null
+      }
     }
   }
 }
@@ -2961,7 +3052,7 @@ export class ServerDocSource implements DocSource {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm test -- src/lib/serverDocSource.test.ts`
-Expected: PASS — 9 tests.
+Expected: PASS — 11 tests. Enumerate names; report a discrepancy rather than adjusting.
 
 - [ ] **Step 5: Commit**
 
@@ -3078,8 +3169,9 @@ export interface Props {
 
 export interface ConflictState {
   relPath: string
-  theirContent: string
-  theirMtimeMs: number
+  /** null when the document vanished on disk — there is no "theirs" to take. */
+  theirContent: string | null
+  theirMtimeMs: number | null
 }
 
 export interface State {
@@ -3465,7 +3557,7 @@ Replace the two stubs with:
 
     if (this.state.dirty[relPath] === true) {
       this.setState({
-        conflict: { relPath, theirContent: doc.content, theirMtimeMs: doc.mtimeMs ?? 0 },
+        conflict: { relPath, theirContent: doc.content, theirMtimeMs: doc.mtimeMs },
       })
       return
     }
@@ -3497,16 +3589,30 @@ Replace the two stubs with:
   resolveTakeTheirs = (): void => {
     const conflict = this.state.conflict
     if (conflict === null) return
+
+    // No on-disk version to take: the document was deleted. Taking "theirs"
+    // here would replace the user's text with nothing, which is data loss
+    // dressed up as conflict resolution. Keep the buffer and say so.
+    if (conflict.theirContent === null) {
+      this.setState((s) => ({
+        conflict: null,
+        baseMtimeMs: { ...s.baseMtimeMs, [conflict.relPath]: null },
+        saveError: `${conflict.relPath} no longer exists on disk. Saving will recreate it.`,
+      }))
+      return
+    }
+    const theirContent = conflict.theirContent
+
     this.setState((s) => {
       const files = s.files.map((f) =>
-        f.relPath === conflict.relPath ? { ...f, content: conflict.theirContent } : f
+        f.relPath === conflict.relPath ? { ...f, content: theirContent } : f
       )
       const active = files.find((f) => f.id === s.activeId)
       const isActive = active?.relPath === conflict.relPath
       return {
         conflict: null,
         files,
-        md: isActive ? conflict.theirContent : s.md,
+        md: isActive ? theirContent : s.md,
         editingSide: isActive ? 'init' : s.editingSide,
         dirty: { ...s.dirty, [conflict.relPath]: false },
         baseMtimeMs: { ...s.baseMtimeMs, [conflict.relPath]: conflict.theirMtimeMs },
