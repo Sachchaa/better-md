@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "build:cli": "tsc -p tsconfig.cli.json",
+    "build:cli": "tsc -p tsconfig.cli.json && node -e \"require('fs').chmodSync('dist-cli/index.js', 0o755)\"",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "format": "prettier --write .",

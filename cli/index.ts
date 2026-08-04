@@ -51,7 +51,16 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     stopWatching()
-    void server.close().then(() => process.exit(0))
+    // Exit 0 either way. An unhandled rejection here would print a stack trace on
+    // Ctrl-C, which is exactly what this CLI's error contract forbids.
+    void server
+      .close()
+      .catch((err: unknown) => {
+        process.stderr.write(
+          `better-md: shutdown error: ${err instanceof Error ? err.message : String(err)}\n`
+        )
+      })
+      .finally(() => process.exit(0))
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
