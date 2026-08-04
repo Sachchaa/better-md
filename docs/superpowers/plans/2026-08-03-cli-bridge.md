@@ -3455,7 +3455,7 @@ Add these members to the class:
       })
       return
     }
-    this.setState({ saving: false, saveError: result.message })
+    this.setState({ saveError: result.message })
   }
 
   dismissSaveError = (): void => this.setState({ saveError: null })
@@ -3668,7 +3668,7 @@ Capture what was sent and only clear the flag if the buffer still matches it:
 ```tsx
 const relPath = file.relPath
 const sent = this.state.md
-this.setState({ saving: true, saveError: null })
+this.setState({ saveError: null })
 const result = await this.props.source.save(relPath, sent, this.state.baseMtimeMs[relPath] ?? null)
 if (result.ok) {
   this.setState((s) => ({
