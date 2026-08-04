@@ -939,8 +939,14 @@ export interface DocRead {
 /**
  * The single gateway to document contents. Every path crossing this boundary is
  * validated to be a bare filename with an allowed extension that resolves,
- * after symlinks, inside `root`. `server.ts` deliberately holds no `fs` import
- * so it cannot reach around these checks.
+ * after symlinks, inside `root`.
+ *
+ * The invariant `server.ts` must uphold: it never derives a document path from a
+ * request and hands it to `fs` itself — every read and write of user content goes
+ * through this class. `server.ts` does use `fs` to serve the built app bundle, but
+ * only against `distDir`, which is confined separately and never influenced by a
+ * workspace-relative path. Reviewers should check that invariant rather than the
+ * mere absence of an `fs` import.
  */
 export class Workspace {
   constructor(private readonly descriptor: WorkspaceDescriptor) {}
