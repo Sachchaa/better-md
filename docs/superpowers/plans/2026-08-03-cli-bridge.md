@@ -3162,7 +3162,7 @@ export function detectSource(origin: string, search: string): DocSource {
 - [ ] **Step 4: Run the tests and the full suite**
 
 Run: `pnpm test -- src/lib/detectSource.test.ts && pnpm typecheck && pnpm lint`
-Expected: 4 tests pass; typecheck and lint clean.
+Expected: 6 tests pass; typecheck and lint clean.
 
 - [ ] **Step 5: Commit**
 
