@@ -3082,12 +3082,41 @@ prop until Task 10, and wiring it early would leave the tree red between tasks.
 Create `src/lib/detectSource.test.ts`:
 
 ```ts
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { detectSource } from './detectSource'
+import { LocalDocSource } from './docSource'
 
 describe('detectSource', () => {
   it('returns a saving source when a token is present', () => {
     expect(detectSource('http://127.0.0.1:5173', '?t=abc123').canSave).toBe(true)
+  })
+
+  // instanceof proves the right class but says nothing about the arguments: a
+  // swapped `new ServerDocSource(token, origin)` or a hardcoded token would pass
+  // every other test here. Only observing an actual request settles it.
+  it('constructs the server source with the given origin and token', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ files: [], active: '' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+    )
+    const original = globalThis.fetch
+    globalThis.fetch = fetchImpl as unknown as typeof fetch
+    try {
+      await detectSource('http://127.0.0.1:4321', '?t=abc123').list()
+    } finally {
+      globalThis.fetch = original
+    }
+
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('http://127.0.0.1:4321/api/workspace')
+    expect((init.headers as Record<string, string>).authorization).toBe('Bearer abc123')
+  })
+
+  it('falls back to the local source for a whitespace-only token', () => {
+    expect(detectSource('http://127.0.0.1:5173', '?t=%20')).toBeInstanceOf(LocalDocSource)
   })
 
   it('returns the local source when no token is present', () => {
@@ -3120,8 +3149,12 @@ import { ServerDocSource } from './serverDocSource'
  * by the CLI; without one the app behaves exactly as the browser-only build.
  */
 export function detectSource(origin: string, search: string): DocSource {
-  const token = new URLSearchParams(search).get('t')
-  if (token === null || token === '') return new LocalDocSource()
+  // Trim before testing: a whitespace-only token (?t=%20) is neither null nor
+  // empty, so it would otherwise build a ServerDocSource whose every request
+  // 401s — a broken app, when the whole point of this branch is that anything
+  // other than a real token yields the working browser-only one.
+  const token = new URLSearchParams(search).get('t')?.trim() ?? ''
+  if (token === '') return new LocalDocSource()
   return new ServerDocSource(origin, token)
 }
 ```
