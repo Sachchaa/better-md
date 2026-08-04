@@ -1,10 +1,14 @@
 import { expect, test } from '@playwright/test'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import type { Readable } from 'node:stream'
 
-let cli: ChildProcessWithoutNullStreams | null = null
+// spawn(..., { stdio: ['ignore', 'pipe', 'pipe'] }) has no stdin stream (it's
+// null), so ChildProcessWithoutNullStreams — which requires a writable stdin
+// too — does not describe the value spawn() actually returns here.
+let cli: ChildProcessByStdio<null, Readable, Readable> | null = null
 let workdir = ''
 
 /** Start the CLI on a temp workspace and return the tokenised URL it prints. */
@@ -51,7 +55,6 @@ test('edits made in the browser save back to the file on disk', async ({ page })
   const editor = page.locator('textarea')
   await expect(editor).toHaveValue(/# hello/)
 
-  await editor.click()
   await editor.fill('# hello from playwright\n')
 
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
@@ -76,7 +79,12 @@ test('loading without a token falls back to sample documents', async ({ page }) 
   const before = await fs.readFile(path.join(workdir, 'hello.md'), 'utf8')
   await page.locator('textarea').fill('should not reach disk')
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
-  await page.waitForTimeout(1_000)
+
+  // Wait on the app's actual response, not a sleep. The save-error banner is
+  // observable proof that Cmd+S was handled and refused; a fixed timeout would
+  // silently start passing for the wrong reason if this path ever became async,
+  // reading the file before a delayed write landed.
+  await expect(page.getByRole('alert')).toContainText('not backed by a file on disk')
 
   expect(await fs.readFile(path.join(workdir, 'hello.md'), 'utf8')).toBe(before)
 })
