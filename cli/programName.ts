@@ -1,10 +1,10 @@
 import path from 'node:path'
 
 /** The bin shims this package installs — keep in sync with package.json "bin". */
-const BIN_NAMES = new Set(['btr-md', 'better-md'])
+const BIN_NAMES = new Set(['better-md', 'btr-md'])
 
 /** Used when we cannot tell how we were invoked. */
-export const CANONICAL_NAME = 'btr-md'
+export const CANONICAL_NAME = 'better-md'
 
 /**
  * The name this process was invoked as.

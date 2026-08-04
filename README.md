@@ -50,28 +50,28 @@ itself. One file, nothing else to install.
 
 The installer picks the right build for your platform, verifies it against the published
 `SHA256SUMS` (and refuses to install if that does not match, or if the checksums are
-missing), and drops it in `~/.local/bin` as both `btr-md` and `better-md`.
+missing), and drops it in `~/.local/bin` as `better-md`, plus `btr-md` as a shorter alias.
 
 Prebuilt for macOS and Linux, arm64 and x64.
 
 ```bash
-BTR_MD_VERSION=v0.1.0 sh install.sh   # pin a release
-BTR_MD_INSTALL=/usr/local/bin sh …    # choose the directory
+BETTER_MD_VERSION=v0.1.0 sh install.sh   # pin a release
+BETTER_MD_INSTALL=/usr/local/bin sh …    # choose the directory
 ```
 
-To uninstall, delete `btr-md` and `better-md` from your install directory. There is
+To uninstall, delete `better-md` and `btr-md` from your install directory. There is
 nothing else on disk.
 
 ## Opening files from disk
 
 ```bash
-btr-md notes.md      # open a single file
-btr-md ./docs        # open every markdown file in a directory
-btr-md --plan        # open Claude Code's plans (~/.claude/plans), newest active
+better-md notes.md   # open a single file
+better-md ./docs     # open every markdown file in a directory
+better-md --plan     # open Claude Code's plans (~/.claude/plans), newest active
 ```
 
-`better-md` is an alias for the same binary, and each name reports itself in `--help` and
-in error messages.
+`btr-md` is a shorter alias for the same binary, and each name reports itself in `--help`
+and in error messages.
 
 Running from a checkout instead of an install:
 

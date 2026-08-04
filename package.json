@@ -5,8 +5,8 @@
   "description": "Open and edit real Markdown files from disk in a browser-based editor — including Claude Code plans.",
   "packageManager": "pnpm@9.12.3",
   "bin": {
-    "btr-md": "./dist-cli/index.js",
-    "better-md": "./dist-cli/index.js"
+    "better-md": "./dist-cli/index.js",
+    "btr-md": "./dist-cli/index.js"
   },
   "engines": {
     "node": ">=22"

@@ -1,5 +1,5 @@
 /**
- * Build self-contained `btr-md` executables with Node's Single Executable
+ * Build self-contained `better-md` executables with Node's Single Executable
  * Application support.
  *
  * Why SEA rather than `bun build --compile`: a Bun binary embeds Bun's runtime,
@@ -11,7 +11,7 @@
  * Pipeline per target:
  *   dist-cli/ (ESM, tsc output)  ──esbuild──▶  one CJS file
  *   CJS file                     ──node ──▶   SEA blob
- *   official node binary + blob  ──postject▶  btr-md-<platform>-<arch>
+ *   official node binary + blob  ──postject▶  better-md-<platform>-<arch>
  *
  * SEA runs its payload as CommonJS, which is why the ESM output is bundled down
  * first rather than injected directly.
@@ -123,7 +123,7 @@ if (
 ) {
   throw new Error('dist-cli/index.js missing — run `pnpm build:cli` first')
 }
-const bundle = path.join(WORK, 'btr-md.cjs')
+const bundle = path.join(WORK, 'better-md.cjs')
 await build({
   entryPoints: [entry],
   outfile: bundle,
@@ -133,7 +133,7 @@ await build({
   format: 'cjs',
   // Keep node builtins external; everything of ours is inlined, including the
   // generated asset module, which is what makes the binary self-contained.
-  banner: { js: '/* btr-md — generated bundle, do not edit */' },
+  banner: { js: '/* better-md — generated bundle, do not edit */' },
   legalComments: 'none',
   logLevel: 'warning',
 })
@@ -143,7 +143,7 @@ process.stdout.write(
 
 // 2. Build the SEA blob once; it is platform independent.
 const seaConfig = path.join(WORK, 'sea-config.json')
-const blob = path.join(WORK, 'btr-md.blob')
+const blob = path.join(WORK, 'better-md.blob')
 await fs.writeFile(
   seaConfig,
   JSON.stringify({ main: bundle, output: blob, disableExperimentalSEAWarning: true }, null, 2)
@@ -154,7 +154,7 @@ execFileSync(process.execPath, ['--experimental-sea-config', seaConfig], { stdio
 const checksums = await officialChecksums()
 const produced = []
 for (const target of wanted) {
-  const name = `btr-md-${target.platform}-${target.arch}`
+  const name = `better-md-${target.platform}-${target.arch}`
   process.stdout.write(`\n${name}\n`)
   const source = await nodeBinaryFor(target, checksums)
   const outFile = path.join(OUT, name)

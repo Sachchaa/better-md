@@ -1,27 +1,27 @@
 #!/bin/sh
-# btr-md installer.
+# better-md installer.
 #
 #   curl -fsSL https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh | sh
 #
-# Downloads a self-contained btr-md executable, verifies it against the
+# Downloads a self-contained better-md executable, verifies it against the
 # published SHA256SUMS, and installs it. No Node.js required — the runtime is
 # embedded in the binary.
 #
 # Environment:
-#   BTR_MD_VERSION   release tag to install (default: latest)
-#   BTR_MD_INSTALL   install directory   (default: $HOME/.local/bin)
+#   BETTER_MD_VERSION   release tag to install (default: latest)
+#   BETTER_MD_INSTALL   install directory   (default: $HOME/.local/bin)
 #
 # Uninstall: delete the two files it reports at the end.
 
 set -eu
 
 REPO="Sachchaa/better-md"
-INSTALL_DIR="${BTR_MD_INSTALL:-$HOME/.local/bin}"
-VERSION="${BTR_MD_VERSION:-latest}"
+INSTALL_DIR="${BETTER_MD_INSTALL:-$HOME/.local/bin}"
+VERSION="${BETTER_MD_VERSION:-latest}"
 
 say() { printf '%s\n' "$*"; }
 die() {
-  printf 'btr-md: %s\n' "$*" >&2
+  printf 'better-md: %s\n' "$*" >&2
   exit 1
 }
 
@@ -43,7 +43,7 @@ case "$arch" in
   *) die "unsupported architecture '$arch'. Prebuilt binaries cover arm64 and x64." ;;
 esac
 
-asset="btr-md-${os}-${arch}"
+asset="better-md-${os}-${arch}"
 
 if [ "$VERSION" = latest ]; then
   base="https://github.com/$REPO/releases/latest/download"
@@ -71,7 +71,7 @@ tmp=$(mktemp -d)
 # binary lying around that a later run might mistake for a good one.
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-say "btr-md: fetching $asset ($VERSION)"
+say "better-md: fetching $asset ($VERSION)"
 curl -fsSL "$base/$asset" -o "$tmp/$asset" ||
   die "could not download $base/$asset
 Check that release '$VERSION' exists and publishes an asset named '$asset'."
@@ -88,26 +88,26 @@ if [ "$expected" != "$actual" ]; then
   expected $expected
   actual   $actual"
 fi
-say "btr-md: checksum verified"
+say "better-md: checksum verified"
 
 # --- install ------------------------------------------------------------------
 
 mkdir -p "$INSTALL_DIR" || die "could not create $INSTALL_DIR"
-install -m 755 "$tmp/$asset" "$INSTALL_DIR/btr-md" ||
-  die "could not write to $INSTALL_DIR. Set BTR_MD_INSTALL to a writable directory."
+install -m 755 "$tmp/$asset" "$INSTALL_DIR/better-md" ||
+  die "could not write to $INSTALL_DIR. Set BETTER_MD_INSTALL to a writable directory."
 
-# The package also answers to 'better-md'; a copy rather than a symlink so the
+# It also answers to the shorter 'btr-md'; a copy rather than a symlink so the
 # binary reports whichever name was typed even if one is moved later.
-install -m 755 "$tmp/$asset" "$INSTALL_DIR/better-md" || true
+install -m 755 "$tmp/$asset" "$INSTALL_DIR/btr-md" || true
 
-say "btr-md: installed to $INSTALL_DIR/btr-md (and better-md)"
+say "better-md: installed to $INSTALL_DIR/better-md (and btr-md)"
 
 # --- tell the user what to do next -------------------------------------------
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*)
     say ""
-    say "Try it:  btr-md --plan"
+    say "Try it:  better-md --plan"
     ;;
   *)
     say ""
@@ -115,6 +115,6 @@ case ":$PATH:" in
     say ""
     say "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc   # or ~/.bashrc"
     say ""
-    say "Then:  btr-md --plan"
+    say "Then:  better-md --plan"
     ;;
 esac
