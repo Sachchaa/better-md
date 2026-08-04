@@ -1,13 +1,14 @@
 import React from 'react'
 import { mdToHtml, htmlToMd } from './lib/markdown'
-import { SAMPLE_README, SAMPLE_NOTES, SAMPLE_TODO } from './lib/samples'
 import { newId } from './lib/id'
 import { resolveFileName } from './lib/filename'
 import { SEG_ON, SEG_OFF, TB_BTN, LABEL } from './ui/classes'
+import type { SourceEvent } from './lib/docSource'
+import { ConflictBanner, SaveErrorBanner } from './ui/ConflictBanner'
 import type { FileDoc, Layout, Props, Side, State } from './types'
 
 export default class App extends React.Component<Props, State> {
-  static defaultProps: Props = {
+  static defaultProps: Partial<Props> = {
     defaultTheme: 'light',
     defaultLayout: 'studio',
     accentColor: '#3b6df2',
@@ -28,25 +29,130 @@ export default class App extends React.Component<Props, State> {
         ? props.defaultLayout
         : 'studio'
     this.state = {
-      files: [
-        { id: 'f1', name: 'README.md', content: SAMPLE_README },
-        { id: 'f2', name: 'notes.md', content: SAMPLE_NOTES },
-        { id: 'f3', name: 'todo.md', content: SAMPLE_TODO },
-      ],
-      activeId: 'f1',
-      md: SAMPLE_README,
+      files: [],
+      activeId: '',
+      md: '',
       theme: props.defaultTheme === 'dark' ? 'dark' : 'light',
       layout,
       focusPane: 'edit',
       editingSide: 'init',
       dragOver: false,
       renamingId: null,
+      loading: true,
+      dirty: {},
+      baseMtimeMs: {},
+      conflict: null,
+      saving: false,
+      saveError: null,
+      watching: !props.source.canSave,
     }
   }
 
+  private unsubscribe: (() => void) | null = null
+
   componentDidMount(): void {
+    void this.loadFromSource()
+    document.addEventListener('keydown', this.onGlobalKey)
+    this.unsubscribe = this.props.source.subscribe(this.onExternalChange)
     this.renderPreview()
   }
+
+  componentWillUnmount(): void {
+    document.removeEventListener('keydown', this.onGlobalKey)
+    this.unsubscribe?.()
+  }
+
+  /** Populate files from the source. Runs once on mount. */
+  private async loadFromSource(): Promise<void> {
+    const listing = await this.props.source.list()
+    const files: FileDoc[] = listing.files.map((doc) => ({
+      id: newId(),
+      name: doc.name,
+      content: doc.content,
+      relPath: doc.relPath,
+    }))
+    if (files.length === 0) {
+      this.setState({ loading: false })
+      return
+    }
+    // Honour the source's chosen active document — for --plan that is the
+    // newest plan, which is the whole point of the flag.
+    const active = files.find((f) => f.relPath === listing.active) ?? files[0]
+    // Seed the conflict-check baselines from the listing itself, so a save
+    // immediately after boot compares against a real mtime rather than null
+    // (which write() would interpret as "create a new file" and reject).
+    const baseMtimeMs: Record<string, number | null> = {}
+    for (const doc of listing.files) baseMtimeMs[doc.relPath] = doc.mtimeMs
+    this.setState({
+      files,
+      activeId: active.id,
+      md: active.content,
+      baseMtimeMs,
+      loading: false,
+      editingSide: 'init',
+    })
+  }
+
+  private activeFile(): FileDoc | undefined {
+    return this.state.files.find((f) => f.id === this.state.activeId)
+  }
+
+  onGlobalKey = (e: KeyboardEvent): void => {
+    const isSave = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's'
+    if (!isSave) return
+    e.preventDefault()
+    void this.saveActive()
+  }
+
+  saveActive = async (): Promise<void> => {
+    const file = this.activeFile()
+    if (file === undefined || file.relPath === undefined) return
+    if (!this.props.source.canSave) {
+      this.setState({ saveError: 'This document is not backed by a file on disk.' })
+      return
+    }
+    const relPath = file.relPath
+    this.setState({ saving: true, saveError: null })
+    const result = await this.props.source.save(
+      relPath,
+      this.state.md,
+      this.state.baseMtimeMs[relPath] ?? null
+    )
+    if (result.ok) {
+      this.setState((s) => ({
+        saving: false,
+        dirty: { ...s.dirty, [relPath]: false },
+        baseMtimeMs: { ...s.baseMtimeMs, [relPath]: result.mtimeMs },
+      }))
+      return
+    }
+    if (result.reason === 'conflict') {
+      this.setState({
+        saving: false,
+        conflict: {
+          relPath,
+          theirContent: result.theirContent,
+          theirMtimeMs: result.theirMtimeMs,
+        },
+      })
+      return
+    }
+    this.setState({ saving: false, saveError: result.message })
+  }
+
+  dismissSaveError = (): void => this.setState({ saveError: null })
+
+  // Task 11 replaces these three with the real implementations. They are real
+  // code, not stubs to remember: dismissing a conflict without resolving it is
+  // the correct fallback behaviour until reload handling exists.
+  onExternalChange = (event: SourceEvent): void => {
+    if (event.type === 'connected') this.setState({ watching: true })
+    if (event.type === 'disconnected') this.setState({ watching: false })
+  }
+
+  resolveKeepMine = (): void => this.setState({ conflict: null })
+
+  resolveTakeTheirs = (): void => this.setState({ conflict: null })
 
   componentDidUpdate(): void {
     if (this.state.editingSide !== 'right') {
@@ -73,11 +179,16 @@ export default class App extends React.Component<Props, State> {
   }
 
   setMd(md: string, side: Side): void {
-    this.setState((s) => ({
-      md,
-      editingSide: side,
-      files: s.files.map((f) => (f.id === s.activeId ? { ...f, content: md } : f)),
-    }))
+    this.setState((s) => {
+      const active = s.files.find((f) => f.id === s.activeId)
+      const dirty = active?.relPath === undefined ? s.dirty : { ...s.dirty, [active.relPath]: true }
+      return {
+        md,
+        editingSide: side,
+        dirty,
+        files: s.files.map((f) => (f.id === s.activeId ? { ...f, content: md } : f)),
+      }
+    })
   }
 
   onMdChange = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
@@ -438,6 +549,14 @@ export default class App extends React.Component<Props, State> {
   }
 
   render() {
+    if (this.state.loading) {
+      return (
+        <div className="grid min-h-screen place-items-center" style={{ color: 'var(--muted)' }}>
+          Loading documents…
+        </div>
+      )
+    }
+
     const st = this.state
     const { layout, theme } = st
     const isTabs = layout === 'tabs'
@@ -467,6 +586,25 @@ export default class App extends React.Component<Props, State> {
 
     return (
       <div data-theme={theme} style={rootStyle}>
+        {this.state.conflict !== null && (
+          <ConflictBanner
+            fileName={this.state.conflict.relPath}
+            onKeepMine={this.resolveKeepMine}
+            onTakeTheirs={this.resolveTakeTheirs}
+          />
+        )}
+        {this.state.saveError !== null && (
+          <SaveErrorBanner message={this.state.saveError} onDismiss={this.dismissSaveError} />
+        )}
+        {this.props.source.canSave && !this.state.watching && (
+          <div
+            role="status"
+            className="border-b px-4 py-1 text-[12px]"
+            style={{ color: 'var(--muted)', borderColor: 'var(--border)' }}
+          >
+            Not watching for changes — reconnecting…
+          </div>
+        )}
         <div
           className="flex flex-col h-screen bg-[var(--bg)] text-[var(--fg)] font-sans relative"
           onDragOver={this.onDragOver}
