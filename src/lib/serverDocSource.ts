@@ -1,0 +1,152 @@
+import type { DocListing, DocRead, DocSource, SaveResult, SourceEvent } from './docSource'
+
+const RECONNECT_BASE_MS = 500
+const RECONNECT_MAX_MS = 10_000
+
+/** Disk-backed source: every call carries the bearer token. */
+export class ServerDocSource implements DocSource {
+  readonly canSave = true
+
+  private readonly fetchImpl: typeof fetch
+
+  constructor(
+    private readonly origin: string,
+    private readonly token: string,
+    fetchImpl?: typeof fetch
+  ) {
+    this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis)
+  }
+
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    return { authorization: `Bearer ${this.token}`, ...extra }
+  }
+
+  private async json<T>(url: string, init?: RequestInit): Promise<T> {
+    const res = await this.fetchImpl(url, {
+      ...init,
+      headers: this.headers(init?.headers as Record<string, string>),
+    })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `request failed with ${res.status}`)
+    }
+    return (await res.json()) as T
+  }
+
+  async list(): Promise<DocListing> {
+    const listing = await this.json<{
+      files: Array<{ name: string; relPath: string }>
+      active: string
+    }>(`${this.origin}/api/workspace`)
+    const files = await Promise.all(
+      listing.files.map(async (file) => {
+        // read() already returns the mtime — keep it rather than re-fetching.
+        const doc = await this.read(file.relPath)
+        return {
+          name: file.name,
+          relPath: file.relPath,
+          content: doc.content,
+          mtimeMs: doc.mtimeMs,
+        }
+      })
+    )
+    return { files, active: listing.active }
+  }
+
+  async read(relPath: string): Promise<DocRead> {
+    const doc = await this.json<{ content: string; mtimeMs: number }>(
+      `${this.origin}/api/doc?path=${encodeURIComponent(relPath)}`
+    )
+    return { content: doc.content, mtimeMs: doc.mtimeMs }
+  }
+
+  async save(relPath: string, content: string, baseMtimeMs: number | null): Promise<SaveResult> {
+    try {
+      const res = await this.fetchImpl(`${this.origin}/api/doc`, {
+        method: 'PUT',
+        headers: this.headers({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ relPath, content, baseMtimeMs }),
+      })
+      if (res.status === 409) {
+        const body = (await res.json()) as { theirContent: string; theirMtimeMs: number }
+        return {
+          ok: false,
+          reason: 'conflict',
+          theirContent: body.theirContent,
+          theirMtimeMs: body.theirMtimeMs,
+        }
+      }
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        return { ok: false, reason: 'error', message: body.error ?? `save failed (${res.status})` }
+      }
+      const body = (await res.json()) as { mtimeMs: number }
+      return { ok: true, mtimeMs: body.mtimeMs }
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'error',
+        message: err instanceof Error ? err.message : 'save failed',
+      }
+    }
+  }
+
+  /**
+   * Consume the SSE stream with fetch so the Authorization header can be set —
+   * EventSource cannot send custom headers.
+   */
+  subscribe(callback: (event: SourceEvent) => void): () => void {
+    let stopped = false
+    let attempt = 0
+    let controller: AbortController | null = null
+
+    const run = async (): Promise<void> => {
+      while (!stopped) {
+        controller = new AbortController()
+        try {
+          const res = await this.fetchImpl(`${this.origin}/api/events`, {
+            headers: this.headers(),
+            signal: controller.signal,
+          })
+          if (!res.ok || res.body === null) throw new Error(`events failed (${res.status})`)
+          attempt = 0
+          callback({ type: 'connected' })
+          const reader = res.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ''
+          while (!stopped) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const frames = buffer.split('\n\n')
+            buffer = frames.pop() ?? ''
+            for (const frame of frames) {
+              for (const line of frame.split('\n')) {
+                if (!line.startsWith('data:')) continue
+                try {
+                  callback(JSON.parse(line.slice(5).trim()) as SourceEvent)
+                } catch {
+                  // Ignore malformed frames rather than tearing down the stream.
+                }
+              }
+            }
+          }
+        } catch {
+          // Fall through to the backoff below.
+        }
+        if (stopped) return
+        callback({ type: 'disconnected' })
+        attempt += 1
+        const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS)
+        await new Promise((resolve) => setTimeout(resolve, delay))
+      }
+    }
+
+    void run()
+
+    return () => {
+      stopped = true
+      controller?.abort()
+    }
+  }
+}
