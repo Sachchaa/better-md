@@ -4185,6 +4185,26 @@ check — `crypto.timingSafeEqual` itself was never reached by any test. Add the
 the real token, so the length matches and the value does not). `cli/server.test.ts` goes
 to 24 tests.
 
+- [ ] **Step 2c: Pin `isOwnEcho`'s null guards**
+
+Task 11's re-review ran the shipped 7 tests against a copy of `isOwnEcho` with **both**
+null guards deleted (`return diskMtimeMs === baseMtimeMs`) and got 7/7 passing. The only
+input pair the guards actually decide is `(null, null)`, and nothing covers it — so the
+helper extracted specifically for mutation resistance is only half-protected.
+
+Add to `src/lib/conflictResolution.test.ts`:
+
+```ts
+it('treats a null-mtime document with no baseline as a genuine change', () => {
+  // Without the null guards this returns true (null === null) and the reload is
+  // suppressed. Nothing else in the suite distinguishes that mutation.
+  expect(isOwnEcho(null, null)).toBe(false)
+})
+```
+
+`src/lib/conflictResolution.test.ts` goes to **8 tests** (124 → 125). Prove it is
+load-bearing: delete both null guards, confirm this test alone fails, restore.
+
 - [ ] **Step 3: Run every check**
 
 Run:
