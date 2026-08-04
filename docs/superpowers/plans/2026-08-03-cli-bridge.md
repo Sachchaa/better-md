@@ -4259,13 +4259,41 @@ pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm build:cli && pnpm
 
 Expected: all green. Record the actual test counts in the commit message.
 
+- [ ] **Step 3b: Make a dead token say so instead of pretending to reconnect**
+
+The token is minted per CLI run and never persisted, so after a CLI restart an
+already-open page holds a dead token: every API call 401s, and `ServerDocSource`'s
+reconnect loop retries forever behind "Not watching for changes — reconnecting…". The
+session is over and the UI implies it is recovering. Saves do fail visibly, so this is not
+silent data loss, but the recovery story is wrong — the user's actual remedy is to reopen
+the URL the CLI printed, and nothing says so.
+
+In `ServerDocSource.subscribe`, treat a 401 from `/api/events` as terminal rather than
+retryable: stop the loop and emit a distinguishable event. The simplest shape that needs no
+new interface surface is to leave `watching` false and surface the guidance through the
+existing save-error channel on the next save attempt — but if you can do it cleanly with a
+new `SourceEvent` variant, that is better, because the user should learn before they try to
+save. Say which you chose and why.
+
+Keep the retry behaviour for every other failure: a genuine transient drop must still
+reconnect, which is what the resync path added in Task 11 depends on.
+
 - [ ] **Step 4: Manual acceptance against real plans**
 
 ```bash
 node dist-cli/index.js --plan
 ```
 
-Verify: the sidebar lists your plans, the newest is active, editing marks it dirty,
+**The `--plan` active-file check must use a discriminating fixture.** Earlier verification
+used a workspace where the newest file was also the alphabetically first, so it never
+distinguished `listing.active` from the `?? files[0]` fallback — the decision that keeps
+`--plan` from opening the wrong document has therefore never been proven end-to-end. Stage
+it deliberately: in a scratch directory, create `aaa-oldest.md` and `zzz-newest.md` and set
+mtimes so `zzz-newest.md` is newest, then run the CLI against it. `zzz-newest.md` must be
+the active document. Broken result: `aaa-oldest.md` is active, meaning the fallback is
+silently in charge.
+
+Then verify against real plans: the sidebar lists your plans, the newest is active, editing marks it dirty,
 Cmd+S writes to `~/.claude/plans/`, and asking Claude to revise a plan while the page
 is clean refreshes the view automatically.
 
