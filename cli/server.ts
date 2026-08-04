@@ -12,6 +12,11 @@ export interface ServerOptions {
   /** 0 (default) lets the OS assign an ephemeral port. */
   port?: number
   host?: string
+  /**
+   * Operator log sink. Injected so tests can assert what was logged and keep
+   * their own output pristine; defaults to stderr. Never receives the token.
+   */
+  log?: (message: string) => void
 }
 
 export interface ServerHandle {
@@ -42,6 +47,22 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ab, bb)
 }
 
+/** True when `candidate` is outside `dir`. Segment-wise, so '..foo.js' is fine. */
+function escapesDir(dir: string, candidate: string): boolean {
+  const rel = path.relative(dir, candidate)
+  return rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)
+}
+
+/** Client errors that a handler raises and the top-level mapper turns into 4xx. */
+export class BadRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400
+  ) {
+    super(message)
+  }
+}
+
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, {
@@ -57,7 +78,8 @@ async function readBody(req: http.IncomingMessage, limitBytes = 8 * 1024 * 1024)
   for await (const chunk of req) {
     const buf = chunk as Buffer
     total += buf.length
-    if (total > limitBytes) throw new Error('request body too large')
+    // 413, not 500 — an oversize body is the client's mistake, not a server fault.
+    if (total > limitBytes) throw new BadRequestError('request body too large', 413)
     chunks.push(buf)
   }
   return Buffer.concat(chunks).toString('utf8')
@@ -66,6 +88,7 @@ async function readBody(req: http.IncomingMessage, limitBytes = 8 * 1024 * 1024)
 export async function startServer(options: ServerOptions): Promise<ServerHandle> {
   const { workspace, distDir } = options
   const host = options.host ?? '127.0.0.1'
+  const log = options.log ?? ((message: string) => process.stderr.write(`better-md: ${message}\n`))
   const token = crypto.randomBytes(32).toString('hex')
   const realDist = await fsp.realpath(distDir)
   const clients = new Set<http.ServerResponse>()
@@ -82,25 +105,62 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   function tokenAllowed(req: http.IncomingMessage): boolean {
     const header = req.headers.authorization
     if (typeof header !== 'string') return false
-    const match = /^Bearer (.+)$/.exec(header)
+    // RFC 7235 makes the scheme token case-insensitive.
+    const match = /^Bearer[ ]+(.+)$/i.exec(header)
     if (match === null) return false
     return timingSafeEqualStr(match[1], token)
   }
 
   async function serveStatic(res: http.ServerResponse, urlPath: string): Promise<void> {
-    const relative = urlPath === '/' ? 'index.html' : decodeURIComponent(urlPath.slice(1))
+    let relative: string
+    if (urlPath === '/') {
+      relative = 'index.html'
+    } else {
+      try {
+        relative = decodeURIComponent(urlPath.slice(1))
+      } catch {
+        // A malformed escape like /%zz is a bad request, not a server fault.
+        // This route has no auth gate, so letting it reach the 500 handler would
+        // let any page flood the terminal the CLI is drawing in, one line per
+        // request. Answer 400 and log nothing.
+        sendJson(res, 400, { error: 'malformed asset path' })
+        return
+      }
+    }
+
     const abs = path.resolve(realDist, relative)
-    const rel = path.relative(realDist, abs)
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    // Segment-wise, so a legitimate '..foo.js' is not caught by a bare prefix test.
+    if (escapesDir(realDist, abs)) {
       sendJson(res, 400, { error: 'invalid asset path' })
       return
     }
+
+    // Lexical confinement is not enough: readFile follows symlinks, so a link
+    // inside dist/ would serve a file from anywhere. Workspace.confineReal
+    // resolves symlinks for documents; the asset layer must agree rather than
+    // being the weaker of the two.
+    let real: string
     try {
-      const body = await fsp.readFile(abs)
+      real = await fsp.realpath(abs)
+    } catch {
+      sendJson(res, 404, { error: 'not found' })
+      return
+    }
+    if (escapesDir(realDist, real)) {
+      sendJson(res, 400, { error: 'invalid asset path' })
+      return
+    }
+
+    try {
+      const body = await fsp.readFile(real)
       res.writeHead(200, {
         'content-type':
-          CONTENT_TYPES[path.extname(abs).toLowerCase()] ?? 'application/octet-stream',
+          CONTENT_TYPES[path.extname(real).toLowerCase()] ?? 'application/octet-stream',
         'cache-control': 'no-store',
+        // The bundle is ours, but these cost nothing and keep a stray asset from
+        // being sniffed into something executable.
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer',
       })
       res.end(body)
     } catch {
@@ -202,44 +262,47 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   }
 
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? '/', `http://${host}`)
+    // Parse defensively. This runs synchronously inside the listener, so a throw
+    // here is NOT caught by done.catch below — it becomes an uncaughtException and
+    // kills the CLI mid-session. A request target the WHATWG parser rejects (e.g.
+    // `GET //[::1`, reachable over a raw socket) did exactly that.
+    let url: URL
+    try {
+      url = new URL(req.url ?? '/', `http://${host}`)
+    } catch {
+      sendJson(res, 400, { error: 'malformed request target' })
+      return
+    }
+
     const done = url.pathname.startsWith('/api/')
       ? handleApi(req, res, url)
       : serveStatic(res, url.pathname)
 
     done.catch((err: unknown) => {
-      // This handler is the last line of defence for the request: nothing
-      // downstream awaits or catches its own errors, so if sendJson itself
-      // threw (e.g. the client already disconnected and the socket can no
-      // longer be written to) it would become an unhandled rejection capable
-      // of taking the whole server down. Swallow that rather than propagate it
-      // — there is no one left to answer.
-      try {
-        if (err instanceof PathError) {
-          sendJson(res, 400, { error: err.message })
-          return
-        }
-        // A missing document is a routine 404, not a server fault. Without this
-        // the workspace's NotFoundError would surface as a 500.
-        if (err instanceof NotFoundError) {
-          sendJson(res, 404, { error: err.message })
-          return
-        }
-        // Anything else is unexpected — most concretely a raw errno that
-        // Workspace.write() lets escape (e.g. EACCES writing a mode-444
-        // document). Node's fs error messages embed the absolute on-disk path,
-        // so forwarding `err.message` to the client would disclose where the
-        // workspace lives. Log the detail for the operator (never the token —
-        // this branch only ever sees fs/parsing failures, not request headers)
-        // and answer the client with a message that reveals nothing about the
-        // filesystem.
-        const detail = err instanceof Error ? err.message : String(err)
-        process.stderr.write(`better-md: unhandled request error: ${detail}\n`)
-        if (res.headersSent) return
-        sendJson(res, 500, { error: 'internal server error' })
-      } catch {
-        // The response can no longer be written to; nothing more to do.
+      // Never write headers twice, whatever the failure was.
+      if (res.headersSent) {
+        res.end()
+        return
       }
+      if (err instanceof BadRequestError) {
+        sendJson(res, err.status, { error: err.message })
+        return
+      }
+      if (err instanceof PathError) {
+        sendJson(res, 400, { error: err.message })
+        return
+      }
+      // A missing document is a routine 404, not a server fault. Without this the
+      // workspace's NotFoundError would surface as a 500.
+      if (err instanceof NotFoundError) {
+        sendJson(res, 404, { error: err.message })
+        return
+      }
+      // Unexpected: log the detail for the operator, but never return it. Raw
+      // errno messages embed absolute paths (Workspace.write lets EACCES through
+      // from fs.writeFile), which would disclose where the workspace lives.
+      log(`unhandled request error: ${err instanceof Error ? err.message : String(err)}`)
+      sendJson(res, 500, { error: 'internal server error' })
     })
   })
 

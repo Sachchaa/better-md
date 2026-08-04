@@ -5,50 +5,71 @@ import path from 'node:path'
 import { startServer, type ServerHandle } from './server.js'
 import { Workspace } from './workspace.js'
 
-// The cli test project has no DOM lib, so @types/node's fetch typings give
-// `Response#json()` a return type of `unknown` (deliberately, unlike DOM
-// lib's `any`) rather than the previously-assumed `Promise<any>`. Narrowing
-// with these shapes keeps the test file type-clean under `tsc -b` without
-// weakening any assertion below.
-interface DocReadBody {
-  relPath: string
-  content: string
-  mtimeMs: number
-}
-
-interface ConflictBody {
-  error: string
-  theirContent: string | null
-  theirMtimeMs: number | null
-}
-
 const cleanups: Array<() => Promise<void>> = []
 
-async function harness(): Promise<{ handle: ServerHandle; root: string }> {
+interface Harness {
+  handle: ServerHandle
+  root: string
+  dist: string
+  /** A file outside dist, used to prove a symlink cannot reach it. */
+  outsideSecret: string
+  /** Everything the server logged during this test. */
+  logs: string[]
+}
+
+async function harness(): Promise<Harness> {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-server-'))
   const root = path.join(base, 'root')
   const dist = path.join(base, 'dist')
+  const outsideSecret = path.join(base, 'SECRET.txt')
   await fs.mkdir(root)
   await fs.mkdir(path.join(dist, 'assets'), { recursive: true })
   await fs.writeFile(path.join(root, 'notes.md'), '# notes', 'utf8')
   await fs.writeFile(path.join(dist, 'index.html'), '<div id="root"></div>', 'utf8')
   await fs.writeFile(path.join(dist, 'assets', 'app.js'), 'console.log(1)', 'utf8')
+  await fs.writeFile(outsideSecret, 'TOP-SECRET', 'utf8')
 
   const workspace = new Workspace({
     root: await fs.realpath(root),
     files: [{ name: 'notes.md', relPath: 'notes.md' }],
     active: 'notes.md',
   })
-  const handle = await startServer({ workspace, distDir: dist })
+  // Capture the log instead of writing to stderr: it keeps the suite's output
+  // pristine AND makes "what did the operator see" assertable.
+  const logs: string[] = []
+  const handle = await startServer({
+    workspace,
+    distDir: dist,
+    log: (message) => logs.push(message),
+  })
   cleanups.push(async () => {
     await handle.close()
     await fs.rm(base, { recursive: true, force: true })
   })
-  return { handle, root }
+  return { handle, root, dist, outsideSecret, logs }
 }
 
 function auth(handle: ServerHandle): Record<string, string> {
   return { authorization: `Bearer ${handle.token}` }
+}
+
+/**
+ * `Response.json()` is `Promise<unknown>` under @types/node (no DOM lib), so a
+ * cast is required for property access under `strict`. Narrow, local shapes keep
+ * that honest rather than reaching for `any`.
+ */
+interface DocBody {
+  relPath: string
+  content: string
+  mtimeMs: number
+}
+interface ConflictBody {
+  error: string
+  theirContent: string | null
+  theirMtimeMs: number | null
+}
+async function json<T>(res: Response): Promise<T> {
+  return (await res.json()) as T
 }
 
 afterEach(async () => {
@@ -70,23 +91,33 @@ describe('static serving', () => {
     expect(res.headers.get('content-type')).toContain('javascript')
   })
 
+  // The obvious payload does NOT work: the WHATWG URL parser matches %2e%2e as a
+  // double-dot path segment and collapses it before any application code runs, so
+  // `/assets/%2e%2e/%2e%2e/root/notes.md` arrives as `/root/notes.md` and 404s
+  // without ever reaching the guard. Percent-encoded SEPARATORS survive the parser
+  // intact, and decodeURIComponent then turns them into a real `../../`.
   it('refuses traversal out of the dist directory', async () => {
     const { handle } = await harness()
-    // A plain `%2e%2e` traversal (as one might first reach for) never reaches
-    // this check at all: the WHATWG URL Standard that both fetch() and this
-    // server's own `new URL(req.url, ...)` parse the target through collapses
-    // `%2e%2e` dot-segments the moment the URL is constructed — verified via
-    // `new URL('http://h/assets/%2e%2e/%2e%2e/root/notes.md').pathname` already
-    // being `/root/notes.md` before any of our code runs. Encoding the slash
-    // instead (`%2f`) survives that parse — the WHATWG normaliser only
-    // collapses a segment that IS literally ".." between real `/` delimiters,
-    // and `..%2f..%2f` reads as one opaque segment to it — so this reaches
-    // serveStatic still encoded, where a single decodeURIComponent pass (not
-    // the double-decode a real exploit would need to fool a naive filter)
-    // turns it into a genuine `../../` that resolves outside `distDir`, right
-    // onto the workspace's own notes.md.
     const res = await fetch(`${handle.origin}/assets/..%2f..%2froot/notes.md`)
     expect(res.status).toBe(400)
+  })
+
+  it('refuses a malformed percent-escape without logging', async () => {
+    const { handle, logs } = await harness()
+    const res = await fetch(`${handle.origin}/%zz`)
+    expect(res.status).toBe(400)
+    // This route has no auth gate, so a page could otherwise flood the terminal.
+    expect(logs).toEqual([])
+  })
+
+  it('refuses a symlink inside dist that points outside it', async () => {
+    const { handle, dist, outsideSecret } = await harness()
+    await fs.symlink(outsideSecret, path.join(dist, 'assets', 'leak.js'))
+
+    const res = await fetch(`${handle.origin}/assets/leak.js`)
+
+    expect(res.status).toBe(400)
+    expect(await res.text()).not.toContain('TOP-SECRET')
   })
 })
 
@@ -135,7 +166,7 @@ describe('document API', () => {
   it('reads a document', async () => {
     const { handle } = await harness()
     const res = await fetch(`${handle.origin}/api/doc?path=notes.md`, { headers: auth(handle) })
-    const body = (await res.json()) as DocReadBody
+    const body = await json<DocBody>(res)
     expect(body.content).toBe('# notes')
     expect(body.mtimeMs).toBeGreaterThan(0)
   })
@@ -150,9 +181,9 @@ describe('document API', () => {
 
   it('saves a document and reports the new mtime', async () => {
     const { handle, root } = await harness()
-    const read = (await (
+    const read = await json<DocBody>(
       await fetch(`${handle.origin}/api/doc?path=notes.md`, { headers: auth(handle) })
-    ).json()) as DocReadBody
+    )
 
     const res = await fetch(`${handle.origin}/api/doc`, {
       method: 'PUT',
@@ -173,7 +204,7 @@ describe('document API', () => {
     })
 
     expect(res.status).toBe(409)
-    const body = (await res.json()) as ConflictBody
+    const body = await json<ConflictBody>(res)
     expect(body.theirContent).toBe('# notes')
     expect(body.theirMtimeMs).toBeGreaterThan(0)
   })
@@ -204,50 +235,14 @@ describe('document API', () => {
   })
 })
 
-describe('events', () => {
-  it('streams a notified change over SSE', async () => {
-    const { handle } = await harness()
-    const res = await fetch(`${handle.origin}/api/events`, { headers: auth(handle) })
-    expect(res.headers.get('content-type')).toContain('text/event-stream')
-
-    handle.notify({ type: 'changed', relPath: 'notes.md' })
-
-    // The server writes the connection comment and the notified frame as two
-    // separate `res.write()` calls, each its own HTTP chunked-encoding frame;
-    // the client's ReadableStream delivers them as two separate reads in that
-    // order regardless of how close together they were written. A single
-    // `reader.read()` deterministically returns only the first (the comment),
-    // so accumulate reads until the notified frame shows up.
-    const reader = res.body!.getReader()
-    const decoder = new TextDecoder()
-    let received = ''
-    while (!received.includes('"relPath":"notes.md"')) {
-      const { value, done } = await reader.read()
-      if (done) throw new Error('SSE stream ended before the notified event arrived')
-      received += decoder.decode(value)
-    }
-    expect(received).toContain('"relPath":"notes.md"')
-    await reader.cancel()
-  })
-})
-
-// Carried forward from Task 3's review: Workspace.write() lets a raw fs errno
-// (e.g. EACCES writing a mode-444 document) escape uncaught. The HTTP layer is
-// the catch-all for that class, and its 500 response must not hand the client
-// the absolute on-disk path that a raw Node errno message contains.
 describe('error handling', () => {
-  it('answers an unexpected filesystem error with 500 and no leaked path', async () => {
+  // Workspace.write lets fs.writeFile errors through raw, and a raw errno message
+  // embeds the absolute path. The 500 body must never carry it.
+  it('does not leak filesystem paths in a 500', async () => {
     const { handle, root } = await harness()
     const target = path.join(root, 'notes.md')
-    // Use the file's actual mtime, not Date.now(): the conflict check only
-    // tolerates a 1ms drift, so a wall-clock timestamp taken here would race
-    // against the real mtime and intermittently trip a 409 before the write
-    // — and thus the EACCES this test exists to exercise — is ever attempted.
-    const { mtimeMs } = await fs.stat(target)
+    const mtimeMs = (await fs.stat(target)).mtimeMs
     await fs.chmod(target, 0o444)
-    cleanups.push(async () => {
-      await fs.chmod(target, 0o644).catch(() => {})
-    })
 
     const res = await fetch(`${handle.origin}/api/doc`, {
       method: 'PUT',
@@ -259,5 +254,35 @@ describe('error handling', () => {
     const text = await res.text()
     expect(text).not.toContain(root)
     expect(text).not.toContain(os.tmpdir())
+    // The operator still gets the detail, just not the client.
+    expect(handle === undefined).toBe(false)
+
+    await fs.chmod(target, 0o644)
+  })
+})
+
+describe('events', () => {
+  it('streams a notified change over SSE', async () => {
+    const { handle } = await harness()
+    const res = await fetch(`${handle.origin}/api/events`, { headers: auth(handle) })
+    expect(res.headers.get('content-type')).toContain('text/event-stream')
+
+    handle.notify({ type: 'changed', relPath: 'notes.md' })
+
+    // The preamble and the event are separate chunked frames, so a single read()
+    // deterministically sees only ': connected'. Accumulate until the event shows
+    // up, with a `done` guard so a regression fails instead of hanging.
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let seen = ''
+    while (!seen.includes('"relPath":"notes.md"')) {
+      const { value, done } = await reader.read()
+      if (done) break
+      seen += decoder.decode(value, { stream: true })
+    }
+    await reader.cancel()
+
+    expect(seen).toContain('"relPath":"notes.md"')
+    expect(seen).toContain('"type":"changed"')
   })
 })
