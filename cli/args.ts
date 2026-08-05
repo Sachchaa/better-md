@@ -18,7 +18,7 @@ Usage:
   ${name} --plan           open Claude Code's plans (~/.claude/plans)
 
 Options:
-  --port <n>   listen on a specific port (default: an ephemeral port)
+  --port <n>   listen on a specific port (default: 8080, or a free port if taken)
   --no-open    print the URL instead of opening a browser
   --help       show this message`
 }
@@ -71,7 +71,9 @@ export function parseCliArgs(argv: string[]): CliOptions {
   return {
     target,
     plan: values.plan === true,
-    port: values.port === undefined ? 0 : parsePort(values.port),
+    // null, not 0: absent means "apply the default port policy", whereas an
+    // explicit --port 0 is a request for an ephemeral port and is honoured as one.
+    port: values.port === undefined ? null : parsePort(values.port),
     open: values['no-open'] !== true,
   }
 }

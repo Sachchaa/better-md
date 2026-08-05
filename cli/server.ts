@@ -5,10 +5,52 @@ import { programName } from './programName.js'
 import type { WatchEvent } from './types.js'
 import { ConflictError, NotFoundError, PathError, WriteError, type Workspace } from './workspace.js'
 
+/**
+ * The port tried first when none is requested.
+ *
+ * A stable default means the URL is the same between runs, which makes it
+ * predictable and re-typable rather than a fresh random number every time. 8080
+ * is commonly occupied though, so binding it is best-effort: see `bindPort`.
+ */
+export const PREFERRED_PORT = 8080
+
+/**
+ * Bind `server`, resolving once it is listening and rejecting with the listen
+ * error. Both listeners are removed on settle so a failed attempt leaves nothing
+ * behind for the next one — `listen` may be retried on the same server.
+ */
+function bindPort(server: http.Server, host: string, port: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const onError = (err: Error): void => {
+      server.removeListener('listening', onListening)
+      reject(err)
+    }
+    const onListening = (): void => {
+      server.removeListener('error', onError)
+      resolve()
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(port, host)
+  })
+}
+
 export interface ServerOptions {
   workspace: Workspace
-  /** 0 (default) lets the OS assign an ephemeral port. */
-  port?: number
+  /**
+   * The port to bind. Omit (or pass null) to prefer PREFERRED_PORT and fall back
+   * to an ephemeral one if it is taken. An explicit value is bound as given and
+   * never falls back — see the comment at the call site for why.
+   */
+  port?: number | null
+  /**
+   * The port tried first when `port` is absent. Defaults to PREFERRED_PORT.
+   *
+   * Injected so the tests can pick a port they have just confirmed free instead of
+   * depending on 8080 being available on whatever machine they run on — that
+   * dependency would make them pass or fail based on unrelated local processes.
+   */
+  preferredPort?: number
   host?: string
   /**
    * Operator log sink. Injected so tests can assert what was logged and keep
@@ -309,10 +351,24 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     })
   })
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(options.port ?? 0, host, resolve)
-  })
+  // An explicit --port is bound as given and never falls back: if you asked for
+  // 4321, something is probably pointed at 4321, and quietly serving somewhere
+  // else is worse than reporting that the port is busy. Only the default is
+  // best-effort, because the whole point of a well-known default is convenience
+  // and it must never stop the tool from starting.
+  const requested = options.port ?? null
+  const preferred = options.preferredPort ?? PREFERRED_PORT
+  if (requested !== null) {
+    await bindPort(server, host, requested)
+  } else {
+    try {
+      await bindPort(server, host, preferred)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err
+      log(`port ${preferred} is in use — using a free port instead`)
+      await bindPort(server, host, 0)
+    }
+  }
 
   const address = server.address()
   if (address === null || typeof address === 'string') {

@@ -4,7 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { ASSETS, type EmbeddedAsset } from './assets.generated.js'
-import { startServer, type ServerHandle } from './server.js'
+import { PREFERRED_PORT, startServer, type ServerHandle } from './server.js'
 import { Workspace } from './workspace.js'
 
 const cleanups: Array<() => Promise<void>> = []
@@ -418,5 +418,120 @@ describe('events', () => {
 
     expect(seen).toContain('"relPath":"notes.md"')
     expect(seen).toContain('"type":"changed"')
+  })
+})
+
+describe('port selection', () => {
+  /** Start a server, registered for cleanup. */
+  async function serve(opts: {
+    port?: number | null
+    preferredPort?: number
+  }): Promise<ServerHandle> {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-port-'))
+    const workspace = new Workspace({
+      root: await fs.realpath(base),
+      files: [{ name: 'notes.md', relPath: 'notes.md' }],
+      active: 'notes.md',
+    })
+    const handle = await startServer({ workspace, ...opts, log: () => {}, assets: FIXTURE_ASSETS })
+    cleanups.push(async () => {
+      await handle.close()
+      await fs.rm(base, { recursive: true, force: true })
+    })
+    return handle
+  }
+
+  /** A port nothing is listening on: bind 0, read what the OS gave, release it. */
+  async function freePort(): Promise<number> {
+    const probe = net.createServer()
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
+    const address = probe.address()
+    if (address === null || typeof address === 'string') throw new Error('probe did not bind')
+    const port = address.port
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+    return port
+  }
+
+  /** Hold `port` so the next attempt to bind it fails with EADDRINUSE. */
+  async function occupy(port: number): Promise<void> {
+    const blocker = net.createServer()
+    await new Promise<void>((resolve, reject) => {
+      blocker.once('error', reject)
+      blocker.listen(port, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>((resolve) => blocker.close(() => resolve())))
+  }
+
+  // Pins the documented default. The usage text, the README and the website all
+  // promise 8080, so the constant is part of the contract rather than an internal.
+  it('prefers 8080 by default', () => {
+    expect(PREFERRED_PORT).toBe(8080)
+  })
+
+  it('binds the preferred port when nothing is requested', async () => {
+    // A confirmed-free port rather than 8080 itself: asserting against the real
+    // constant would make this pass or fail based on what else is running on the
+    // machine, which is not a property of the server.
+    const preferredPort = await freePort()
+
+    const handle = await serve({ preferredPort })
+
+    expect(handle.port).toBe(preferredPort)
+    expect(handle.url).toContain(`:${preferredPort}/`)
+  })
+
+  it('falls back to a free port when the preferred one is taken', async () => {
+    const preferredPort = await freePort()
+    await occupy(preferredPort)
+
+    const handle = await serve({ preferredPort })
+
+    // The point of the default being best-effort: a busy 8080 must never stop the
+    // tool from starting.
+    expect(handle.port).not.toBe(preferredPort)
+    expect(handle.port).toBeGreaterThan(0)
+    const res = await fetch(`${handle.origin}/`)
+    expect(res.status).toBe(200)
+    await res.text()
+  })
+
+  it('says so in the log when it falls back', async () => {
+    const preferredPort = await freePort()
+    await occupy(preferredPort)
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-port-log-'))
+    const logs: string[] = []
+    const handle = await startServer({
+      workspace: new Workspace({ root: await fs.realpath(base), files: [], active: 'x.md' }),
+      preferredPort,
+      log: (m) => logs.push(m),
+      assets: FIXTURE_ASSETS,
+    })
+    cleanups.push(async () => {
+      await handle.close()
+      await fs.rm(base, { recursive: true, force: true })
+    })
+
+    // Serving on a different port than advertised is exactly the kind of surprise
+    // that needs to be stated, not inferred from the printed URL.
+    expect(logs.join('\n')).toContain(`port ${preferredPort} is in use`)
+  })
+
+  it('does NOT fall back for an explicit port — it fails', async () => {
+    const taken = await serve({ port: 0 })
+
+    // Silently serving elsewhere would be worse than failing: an explicit --port
+    // usually means something is already pointed at that port.
+    await expect(serve({ port: taken.port })).rejects.toMatchObject({ code: 'EADDRINUSE' })
+  })
+
+  it('honours an explicit 0 as a request for an ephemeral port', async () => {
+    const preferredPort = await freePort()
+
+    const handle = await serve({ port: 0, preferredPort })
+
+    // `--port 0` must not be treated as "absent" and silently upgraded to the
+    // preferred port.
+    expect(handle.port).toBeGreaterThan(0)
+    expect(handle.port).not.toBe(preferredPort)
   })
 })

@@ -6,7 +6,7 @@ describe('parseCliArgs', () => {
     expect(parseCliArgs(['notes.md'])).toEqual({
       target: 'notes.md',
       plan: false,
-      port: 0,
+      port: null,
       open: true,
     })
   })
@@ -15,7 +15,7 @@ describe('parseCliArgs', () => {
     expect(parseCliArgs(['--plan'])).toEqual({
       target: null,
       plan: true,
-      port: 0,
+      port: null,
       open: true,
     })
   })
@@ -33,7 +33,16 @@ describe('parseCliArgs', () => {
   })
 
   it('parses --port', () => {
-    expect(parseCliArgs(['--port', '8080', 'a.md']).port).toBe(8080)
+    expect(parseCliArgs(['--port', '4321', 'a.md']).port).toBe(4321)
+  })
+
+  // null and 0 must stay distinguishable: null means "apply the default policy"
+  // (prefer 8080, fall back), while an explicit 0 is a request for an ephemeral
+  // port and is honoured literally. Collapsing them would make `--port 0` behave
+  // like omitting the flag.
+  it('distinguishes an absent --port from an explicit 0', () => {
+    expect(parseCliArgs(['a.md']).port).toBeNull()
+    expect(parseCliArgs(['--port', '0', 'a.md']).port).toBe(0)
   })
 
   it('rejects a non-numeric port', () => {

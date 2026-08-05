@@ -15,6 +15,7 @@
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -169,6 +170,37 @@ try {
 
   server.child.kill('SIGTERM')
   server = null
+
+  // --- port selection, on the packaged binary ------------------------------
+  // Hold 8080 so the preferred port is unavailable. If something else already has
+  // it, that is equally fine — either way the binary must fall back rather than
+  // fail, which is the whole point of the default being best-effort.
+  const blocker = net.createServer()
+  await new Promise((resolve) => {
+    blocker.once('error', resolve) // already taken by something else: also fine
+    blocker.listen(8080, '127.0.0.1', resolve)
+  })
+  const fellBack = await start(['--no-open', ws])
+  check(
+    'falls back when the preferred port is taken',
+    new URL(fellBack.url).port !== '8080',
+    `bound ${new URL(fellBack.url).port}`
+  )
+  fellBack.child.kill('SIGTERM')
+  await new Promise((resolve) => blocker.close(resolve))
+
+  // An explicit --port must be honoured exactly, never quietly moved.
+  const probe = net.createServer()
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve))
+  const wanted = probe.address().port
+  await new Promise((resolve) => probe.close(resolve))
+  const pinned = await start(['--no-open', '--port', String(wanted), ws])
+  check(
+    'honours an explicit --port',
+    new URL(pinned.url).port === String(wanted),
+    `asked ${wanted}, got ${new URL(pinned.url).port}`
+  )
+  pinned.child.kill('SIGTERM')
 
   // --- --plan picks the NEWEST plan, not the first alphabetically ----------
   const home = path.join(base, 'home')

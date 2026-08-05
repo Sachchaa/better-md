@@ -498,7 +498,7 @@
 $ better-md --plan
    │
    ├─ resolve one directory as the workspace
-   ├─ start http://127.0.0.1:&lt;ephemeral port&gt;
+   ├─ start http://127.0.0.1:8080 (or a free port)
    │    ├─ serve the editor from assets embedded in the binary
    │    ├─ GET/PUT /api/doc     <span class="c">documents, through a path-confinement gateway</span>
    │    └─ GET     /api/events  <span class="c">change notifications (SSE)</span>
@@ -579,7 +579,7 @@ $ better-md --plan
               </tr>
               <tr>
                 <td><code>better-md --port 4321</code></td>
-                <td>A fixed port instead of an ephemeral one</td>
+                <td>Pin a port — honoured exactly, and fails rather than moving if it is taken</td>
               </tr>
               <tr>
                 <td><code>better-md --no-open</code></td>
@@ -588,6 +588,11 @@ $ better-md --plan
             </tbody>
           </table>
         </div>
+        <p class="beneath">
+          It serves on <code>8080</code> by default, so the URL stays the same between runs. If that
+          port is busy it says so and takes a free one instead — a taken port never stops it from
+          starting.
+        </p>
         <p class="beneath">
           <code>btr-md</code> is a shorter alias for the same binary, and each name reports itself
           in <code>--help</code> and in error messages.

@@ -3,8 +3,15 @@ export interface CliOptions {
   /** File or directory path, or null when --plan was used. */
   target: string | null
   plan: boolean
-  /** 0 means "let the OS pick an ephemeral port". */
-  port: number
+  /**
+   * The port asked for, or null when --port was not passed.
+   *
+   * null is distinct from 0: null means "no preference, apply the default policy"
+   * (prefer PREFERRED_PORT, fall back to ephemeral), while an explicit 0 means the
+   * caller specifically asked the OS to pick one. Collapsing the two would make
+   * `--port 0` indistinguishable from omitting the flag.
+   */
+  port: number | null
   open: boolean
 }
 

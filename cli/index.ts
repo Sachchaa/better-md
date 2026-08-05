@@ -24,8 +24,9 @@ async function main(): Promise<void> {
     server = await startServer({ workspace, port: options.port })
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      // Only reachable for an explicit --port; the default falls back on its own.
       throw new ResolveError(
-        `port ${options.port} is already in use. Omit --port to let the OS pick a free one.`
+        `port ${options.port} is already in use. Omit --port to pick a free one automatically.`
       )
     }
     throw err

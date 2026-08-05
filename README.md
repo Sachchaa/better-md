@@ -74,12 +74,17 @@ identical. To uninstall, delete the two files it reports — there is nothing el
 better-md --plan          # Claude Code's plans (~/.claude/plans), newest active
 better-md notes.md        # a single file
 better-md ./docs          # every Markdown file in a directory
-better-md --port 4321     # a fixed port instead of an ephemeral one
+better-md --port 4321     # pin a port (fails if busy, rather than moving)
 better-md --no-open       # print the URL without launching a browser
 ```
 
 `btr-md` is the same binary under a shorter name, and each name reports itself in `--help`
 and in error messages.
+
+It serves on **port 8080** by default, so the URL is the same between runs. If 8080 is
+already in use it says so and takes a free port instead — a busy port never stops it from
+starting. An explicit `--port` behaves differently on purpose: it is honoured exactly and
+fails if the port is taken, because if you named a port, something is probably pointed at it.
 
 Edits save with `Cmd/Ctrl+S`. Nothing is written until you press it — auto-save would
 rewrite plan files on every stray keystroke.
@@ -93,7 +98,7 @@ local server the editor talks to.
 better-md --plan
    │
    ├─ resolve one directory as the workspace          cli/resolve.ts
-   ├─ start http://127.0.0.1:<ephemeral port>         cli/server.ts
+   ├─ start http://127.0.0.1:8080, or a free port     cli/server.ts
    │    ├─ serve the editor from assets embedded in the binary
    │    ├─ GET/PUT /api/doc     documents, via the confinement gateway
    │    └─ GET     /api/events  change notifications (SSE)
