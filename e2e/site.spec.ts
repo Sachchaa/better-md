@@ -1,19 +1,20 @@
 import { expect, test } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 /**
  * The marketing site at better-md.dev.
  *
- * Runs against `dist/site/index.html` rather than the source in `public/`, so it
- * also proves the build actually publishes the page — moving it out of `public/`
- * would drop it from `dist/` and fail here rather than 404ing in production.
+ * Served over HTTP from the built `dist/` (see playwright.config.ts), not read off
+ * disk. That matters: this suite used to load the page over `file://`, where a
+ * relative image `src` resolves to a sibling file and passes — while in production
+ * the page is rewritten to `/` and the same src resolves against the root and
+ * 404s. That shipped once. Only a real origin with real paths catches it.
  *
- * The page is self-contained (inline CSS, no bundle), so a file:// URL exercises
- * everything except the webfont.
+ * Running against the build rather than `public/` also proves the page is actually
+ * published: moving it out of `public/` would drop it from `dist/` and fail here.
  */
-const PAGE = pathToFileURL(path.resolve('dist/site/index.html')).href
+const PAGE = 'http://127.0.0.1:4173/'
 
 /**
  * Where the hosted editor lives. Hardcoded on purpose: the point of these tests

@@ -183,9 +183,14 @@ One Vercel project serves the site, the hosted editor, and the installer out of 
 still resolves, since `curl -L` follows the redirect.
 
 Nothing is built to the root of `dist/`, which is what lets those host rules apply at all —
-`scripts/layout-dist.mjs` explains why, and `e2e/site.spec.ts` enforces it. One local
-consequence: `pnpm preview` serves `dist/` without Vercel's routing, so `/` 404s. Use
-`/site/` and `/app/` instead.
+`scripts/layout-dist.mjs` explains why, and `e2e/site.spec.ts` enforces it.
+
+`pnpm preview:routed` serves `dist/` with those rewrites applied, so `/` is the landing page
+and `/app/` is the editor, exactly as in production. Use it rather than `pnpm preview`, which
+serves the raw directory and puts the landing page at a URL production never uses. That gap
+was not cosmetic: it hid a hero image referenced by a relative path, which resolves fine from
+`/site/` and 404s from `/`. It shipped broken with the suite green. The e2e tests now run
+against the routed server for that reason.
 
 ## License
 
