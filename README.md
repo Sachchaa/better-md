@@ -1,24 +1,16 @@
 # better-md
 
-**Markdown Dashboard** — a clean, two-way Markdown editor with a live, editable preview.
-Originally prototyped in Claude Design, then implemented as a real app.
+**Markdown Dashboard** — a clean, two-way Markdown editor with a live, editable preview,
+plus a CLI that opens real files from your disk in it. Originally prototyped in Claude
+Design, then implemented as a real app.
 
-## Stack
+**[Try it in your browser →](https://playground.better-md.dev)** &nbsp;·&nbsp;
+[better-md.dev](https://better-md.dev) &nbsp;·&nbsp;
+[How it works](#how-it-works)
 
-- **pnpm** — package manager
-- **Vite** + **React 19** — app + dev server
-- **TypeScript** (strict)
-- **Tailwind CSS v4** — styling (theme tokens driven by CSS variables)
-
-## Features
-
-- Bidirectional sync — edit Markdown source on the left or the rendered preview on the right
-- Formatting toolbar (headings, bold/italic/strike/code, lists, quote, link) + `Tab` indent
-- Three layouts: **Studio** (sidebar + split), **Tabs**, **Focus** (single pane)
-- Light / dark themes with a configurable accent color
-- Multi-file management with drag-and-drop `.md` / `.markdown` / `.txt` import
-- Synced scrolling, live word/char/line counts, read-time estimate
-- Export to Markdown (`.md`) or PDF (via print)
+```bash
+curl -fsSL https://better-md.dev/install.sh | sh
+```
 
 ## Getting started
 
@@ -177,55 +169,6 @@ raises a conflict against itself.
 
 Renaming and deleting act on the editor only, so those controls are hidden in disk-backed
 mode rather than implying a change that never reaches the file.
-
-## Project structure
-
-```
-index.html          # entry HTML (loads /src/main.tsx)
-src/
-  main.tsx          # React root
-  App.tsx           # Markdown Dashboard component (UI + state)
-  App.test.tsx      # App-level tests: the source is a fake DocSource, not a mock
-  types.ts          # shared TypeScript types
-  index.css         # Tailwind import + theme tokens (light/dark CSS variables)
-  lib/
-    markdown.ts     # Markdown <-> HTML conversion (URL-sanitized)
-    markdown.test.ts# unit tests for the markdown engine
-    samples.ts      # seed documents
-    id.ts           # collision-free file ids
-    docSource.ts    # DocSource interface + LocalDocSource (browser-only, in-memory)
-    serverDocSource.ts # DocSource backed by the CLI's HTTP API + SSE
-    conflictResolution.ts # pure helpers behind the save/reload conflict logic
-    detectSource.ts  # chooses Local vs Server at boot from the URL token
-  ui/
-    classes.ts      # shared Tailwind class fragments
-    ConflictBanner.tsx # conflict / save-error banners
-cli/                 # the CLI — argv to a served, token-guarded HTTP API
-  args.ts           # argv -> {target, plan, port, open}
-  programName.ts    # which alias was invoked, so help/errors name it correctly
-  resolve.ts        # args -> workspace descriptor {root, files[], active}
-  workspace.ts      # the only module that touches file contents; path confinement lives here
-  watch.ts          # fs.watch, debounced, emits change events
-  server.ts         # node:http embedded-asset serving + JSON API + SSE
-  index.ts          # wiring, browser open, SIGINT teardown
-  assets.generated.ts # GENERATED: the editor bundle, embedded (gitignored)
-scripts/
-  layout-dist.mjs   # move the built editor out of dist/ root so host routing works
-  embed-assets.mjs  # dist/ -> cli/assets.generated.ts
-  build-binaries.mjs # single-file executables via Node SEA, per platform
-install.sh          # the one-line installer (downloads + verifies a release)
-public/
-  site/index.html   # better-md.dev landing page — hand-written, no build step
-e2e/
-  cli-bridge.spec.ts # Playwright: spawns the CLI, drives the browser, asserts disk state
-  site.spec.ts      # Playwright: the landing page renders and its links are live
-vercel.json         # deploy config: host-based routing + install.sh content type
-vite.config.ts      # Vite + React + Tailwind plugins
-vitest.workspace.ts # test config: separate `app` (jsdom) and `cli` (node) projects
-playwright.config.ts # end-to-end test config
-eslint.config.js    # ESLint flat config
-tsconfig*.json      # TypeScript project config (strict), one per build target
-```
 
 ## Deployment
 
