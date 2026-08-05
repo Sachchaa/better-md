@@ -210,6 +210,7 @@ cli/                 # the CLI — argv to a served, token-guarded HTTP API
   index.ts          # wiring, browser open, SIGINT teardown
   assets.generated.ts # GENERATED: the editor bundle, embedded (gitignored)
 scripts/
+  layout-dist.mjs   # move the built editor out of dist/ root so host routing works
   embed-assets.mjs  # dist/ -> cli/assets.generated.ts
   build-binaries.mjs # single-file executables via Node SEA, per platform
 install.sh          # the one-line installer (downloads + verifies a release)
@@ -231,27 +232,50 @@ tsconfig*.json      # TypeScript project config (strict), one per build target
 One Vercel project serves three things out of a single `dist/`, routed by hostname in
 `vercel.json`:
 
-| URL                        | Serves                       | From                   |
-| -------------------------- | ---------------------------- | ---------------------- |
-| `better-md.dev`            | the landing page             | `dist/site/index.html` |
-| `playground.better-md.dev` | the editor, sample docs      | `dist/index.html`      |
-| `better-md.dev/install.sh` | the installer, as plain text | `dist/install.sh`      |
+| URL                            | Serves                       | From                   |
+| ------------------------------ | ---------------------------- | ---------------------- |
+| `www.better-md.dev`            | the landing page             | `dist/site/index.html` |
+| `playground.better-md.dev`     | the editor, sample docs      | `dist/app/index.html`  |
+| `www.better-md.dev/install.sh` | the installer, as plain text | `dist/install.sh`      |
 
-The rewrite order matters: the `playground` host is matched first, and everything else —
-the apex, `www`, and every preview deployment — falls through to the landing page. So a
-preview URL shows the site at `/`, which is what you want to review; the editor stays
-reachable on any host at the explicit `/index.html`.
+`www` is the primary domain — the apex 308-redirects to it — so `better-md.dev/install.sh`
+still resolves, since `curl -L` follows the redirect.
 
-`index.html` remains the **editor**, deliberately. The CLI embeds all of `dist/` and serves
-the key `index.html` at `/`, so making the landing page the root would mean
-`better-md --plan` opening a marketing page. Keeping the site at its own path leaves the
-binary's contract untouched and confines the split to hosting. `scripts/embed-assets.mjs`
-drops `site/` from the embedded manifest, and `scripts/smoke-binary.mjs` asserts both
-halves of that: the website is absent from the binary, and `/` is still the editor.
+### Nothing lives at the root of `dist/`
+
+**Vercel resolves the filesystem _before_ applying `vercel.json` rewrites.** A real
+`dist/index.html` is therefore served at `/` on every hostname and no host-based rule can
+ever fire. The first version of this shipped green and still showed the editor at the apex
+for exactly that reason.
+
+So `pnpm build` ends with `scripts/layout-dist.mjs`, which moves the built editor to
+`dist/app/index.html` and leaves the root empty. With no file to find, both rewrites apply:
+
+1. host `playground.better-md.dev` → `/app/index.html`
+2. everything else → `/site/index.html`
+
+Order matters. The `playground` host is matched first; the apex, `www`, and every preview
+deployment fall through to the landing page — so a preview URL shows the site at `/`, which
+is what you want to review, while the editor stays reachable on any host at the explicit
+`/app/index.html`.
+
+Two consequences worth knowing:
+
+- `pnpm preview` serves `dist/` without Vercel's routing, so `/` 404s locally. Use
+  `/site/` and `/app/` instead.
+- Vite's entry stays `./index.html`, so `pnpm dev` is unaffected — only built output moves.
+
+### The CLI is insulated from all of it
+
+`cli/server.ts` still serves the key `index.html` at `/`, unchanged.
+`scripts/embed-assets.mjs` maps `app/index.html` → `index.html` when it builds the manifest,
+so a hosting decision never reaches into the binary. It also drops `site/` entirely, and
+`scripts/smoke-binary.mjs` asserts both halves: the website is absent from the binary, and
+`/` is still the editor.
 
 The landing page is hand-written HTML with inline CSS rather than a second Vite entry — a
 marketing page should not carry a build pipeline, and staying out of the editor's bundle
-graph is what makes the exclusion above trivially true. Its theme tokens are copied from
+graph is what makes that exclusion trivially true. Its theme tokens are copied from
 `src/index.css`, so the two read as one product.
 
 ## Security note

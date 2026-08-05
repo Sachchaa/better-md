@@ -13,7 +13,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "pnpm sync:installer && tsc -p tsconfig.app.json && vite build",
+    "build": "pnpm sync:installer && tsc -p tsconfig.app.json && vite build && node scripts/layout-dist.mjs",
     "build:cli": "pnpm embed && tsc -p tsconfig.cli.json && node -e \"require('fs').chmodSync('dist-cli/index.js', 0o755)\"",
     "typecheck": "pnpm embed && tsc -b",
     "lint": "eslint .",

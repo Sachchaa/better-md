@@ -29,6 +29,19 @@ test('explains what better-md is', async ({ page }) => {
   await expect(page.locator('#how')).toContainText('local server')
 })
 
+test('the deploy leaves dist/ root empty so host routing can work', async () => {
+  // The property production depends on, asserted directly because getting it wrong
+  // fails silently: Vercel resolves the filesystem BEFORE applying vercel.json
+  // rewrites, so a dist/index.html is served at `/` on every host and neither
+  // host-based rule ever fires. That is exactly the bug this layout fixes — the
+  // first version of this deployed green and still showed the editor at the apex.
+  await expect(fs.access(path.resolve('dist/index.html'))).rejects.toThrow()
+
+  // Both rewrite destinations must exist, or `/` 404s instead.
+  await expect(fs.access(path.resolve('dist/app/index.html'))).resolves.toBeUndefined()
+  await expect(fs.access(path.resolve('dist/site/index.html'))).resolves.toBeUndefined()
+})
+
 test('publishes the install command that actually exists', async ({ page }) => {
   await page.goto(PAGE)
 

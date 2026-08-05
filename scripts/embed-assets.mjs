@@ -44,6 +44,17 @@ const NOT_APP_ASSETS = new Set(['install.sh'])
  */
 const NOT_APP_DIRS = ['site/']
 
+/**
+ * dist/ path -> the key the CLI serves it under.
+ *
+ * The editor's HTML is built to `app/index.html` so the deployed root stays empty
+ * and Vercel's host-based routing can work (see scripts/layout-dist.mjs). The CLI
+ * has no such constraint and serves the editor at `/`, which `cli/server.ts` looks
+ * up as `index.html`. Renaming it here keeps that server contract fixed, so a
+ * hosting decision never reaches into the binary.
+ */
+const KEY_MAP = new Map([['app/index.html', 'index.html']])
+
 /** Every file under `dir`, as paths relative to it with forward slashes. */
 async function walk(dir, base = dir) {
   const out = []
@@ -63,7 +74,7 @@ async function walk(dir, base = dir) {
 // refuses to start when index.html is not embedded, so an empty build cannot
 // masquerade as a working one.
 const files = await walk(DIST).catch(() => null)
-if (files === null || !files.includes('index.html')) {
+if (files === null || !files.includes('app/index.html')) {
   await fs.writeFile(
     OUT,
     `/**
@@ -96,8 +107,9 @@ for (const rel of files) {
   const bytes = await fs.readFile(path.join(DIST, rel))
   total += bytes.length
   const type = CONTENT_TYPES[path.extname(rel).toLowerCase()] ?? 'application/octet-stream'
+  const key = KEY_MAP.get(rel) ?? rel
   entries.push(
-    `  [${JSON.stringify(rel)}, { contentType: ${JSON.stringify(type)}, base64: '${bytes.toString('base64')}' }],`
+    `  [${JSON.stringify(key)}, { contentType: ${JSON.stringify(type)}, base64: '${bytes.toString('base64')}' }],`
   )
 }
 
