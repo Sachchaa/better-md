@@ -184,42 +184,10 @@ One Vercel project serves three things out of a single `dist/`, routed by hostna
 `www` is the primary domain — the apex 308-redirects to it — so `better-md.dev/install.sh`
 still resolves, since `curl -L` follows the redirect.
 
-### Nothing lives at the root of `dist/`
-
-**Vercel resolves the filesystem _before_ applying `vercel.json` rewrites.** A real
-`dist/index.html` is therefore served at `/` on every hostname and no host-based rule can
-ever fire. The first version of this shipped green and still showed the editor at the apex
-for exactly that reason.
-
-So `pnpm build` ends with `scripts/layout-dist.mjs`, which moves the built editor to
-`dist/app/index.html` and leaves the root empty. With no file to find, both rewrites apply:
-
-1. host `playground.better-md.dev` → `/app/index.html`
-2. everything else → `/site/index.html`
-
-Order matters. The `playground` host is matched first; the apex, `www`, and every preview
-deployment fall through to the landing page — so a preview URL shows the site at `/`, which
-is what you want to review, while the editor stays reachable on any host at the explicit
-`/app/index.html`.
-
-Two consequences worth knowing:
-
-- `pnpm preview` serves `dist/` without Vercel's routing, so `/` 404s locally. Use
-  `/site/` and `/app/` instead.
-- Vite's entry stays `./index.html`, so `pnpm dev` is unaffected — only built output moves.
-
-### The CLI is insulated from all of it
-
-`cli/server.ts` still serves the key `index.html` at `/`, unchanged.
-`scripts/embed-assets.mjs` maps `app/index.html` → `index.html` when it builds the manifest,
-so a hosting decision never reaches into the binary. It also drops `site/` entirely, and
-`scripts/smoke-binary.mjs` asserts both halves: the website is absent from the binary, and
-`/` is still the editor.
-
-The landing page is hand-written HTML with inline CSS rather than a second Vite entry — a
-marketing page should not carry a build pipeline, and staying out of the editor's bundle
-graph is what makes that exclusion trivially true. Its theme tokens are copied from
-`src/index.css`, so the two read as one product.
+Nothing is built to the root of `dist/`, which is what lets those host rules apply at all —
+`scripts/layout-dist.mjs` explains why, and `e2e/site.spec.ts` enforces it. One local
+consequence: `pnpm preview` serves `dist/` without Vercel's routing, so `/` 404s. Use
+`/site/` and `/app/` instead.
 
 ## Security note
 
