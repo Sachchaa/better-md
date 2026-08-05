@@ -265,6 +265,19 @@
         margin: 30px 0 0;
       }
 
+      /* --- screenshot --------------------------------------------------- */
+
+      .shot {
+        margin: 46px 0 0;
+      }
+      .shot img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+
       /* --- sections ----------------------------------------------------- */
 
       section {
@@ -392,8 +405,16 @@
         <a class="wordmark" href="/">better<span>-</span>md</a>
         <nav>
           <a class="nav-secondary" href="#how">How it works</a>
-          <a href="https://github.com/Sachchaa/better-md">GitHub</a>
-          <a id="nav-playground" href="https://playground.better-md.dev">Playground&nbsp;→</a>
+          <a href="https://github.com/Sachchaa/better-md" target="_blank" rel="noopener noreferrer"
+            >GitHub</a
+          >
+          <a
+            id="nav-playground"
+            href="https://playground.better-md.dev"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Playground&nbsp;→</a
+          >
         </nav>
       </div>
     </header>
@@ -415,12 +436,35 @@
         <p class="beneath">macOS and Linux · arm64 and x64 · no Node.js required</p>
 
         <div class="cta">
-          <a class="btn btn-primary" id="cta-playground" href="https://playground.better-md.dev"
+          <a
+            class="btn btn-primary"
+            id="cta-playground"
+            href="https://playground.better-md.dev"
+            target="_blank"
+            rel="noopener noreferrer"
             >Open the playground</a
           >
-          <a class="btn" href="https://github.com/Sachchaa/better-md">View source</a>
+          <a
+            class="btn"
+            href="https://github.com/Sachchaa/better-md"
+            target="_blank"
+            rel="noopener noreferrer"
+            >View source</a
+          >
         </div>
       </div>
+
+      <figure class="shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="screenshot-dark.png" />
+          <img
+            src="screenshot-light.png"
+            width="2000"
+            height="1250"
+            alt="better-md showing an implementation plan: Markdown source on the left, rendered preview on the right"
+          />
+        </picture>
+      </figure>
 
       <section>
         <h2>What it is</h2>
@@ -560,9 +604,14 @@ $ better-md --plan
         </p>
         <p>
           Prefer to read it first? It is served as plain text, so
-          <a href="https://better-md.dev/install.sh">better-md.dev/install.sh</a> opens in a
-          browser, and the
-          <a href="https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh"
+          <a href="https://better-md.dev/install.sh" target="_blank" rel="noopener noreferrer"
+            >better-md.dev/install.sh</a
+          >
+          opens in a browser, and the
+          <a
+            href="https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh"
+            target="_blank"
+            rel="noopener noreferrer"
             >copy on GitHub</a
           >
           is identical. To uninstall, delete the two files it reports. There is nothing else on
@@ -570,7 +619,11 @@ $ better-md --plan
         </p>
         <p>
           Or skip installing altogether and
-          <a id="body-playground" href="https://playground.better-md.dev"
+          <a
+            id="body-playground"
+            href="https://playground.better-md.dev"
+            target="_blank"
+            rel="noopener noreferrer"
             >try the editor in your browser</a
           >
           — it runs with sample documents, since opening your own files is exactly the part that
@@ -583,9 +636,24 @@ $ better-md --plan
       <div class="wrap foot">
         <span>MIT licensed · built by Sachin Kanishka</span>
         <span>
-          <a href="https://github.com/Sachchaa/better-md">GitHub</a> ·
-          <a href="https://github.com/Sachchaa/better-md/releases">Releases</a> ·
-          <a id="foot-playground" href="https://playground.better-md.dev">Playground</a>
+          <a href="https://github.com/Sachchaa/better-md" target="_blank" rel="noopener noreferrer"
+            >GitHub</a
+          >
+          ·
+          <a
+            href="https://github.com/Sachchaa/better-md/releases"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Releases</a
+          >
+          ·
+          <a
+            id="foot-playground"
+            href="https://playground.better-md.dev"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Playground</a
+          >
         </span>
       </div>
     </footer>

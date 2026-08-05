@@ -1,179 +1,177 @@
-# better-md
+<h1 align="center">better-md</h1>
 
-**Markdown Dashboard** — a clean, two-way Markdown editor with a live, editable preview,
-plus a CLI that opens real files from your disk in it. Originally prototyped in Claude
-Design, then implemented as a real app.
+<p align="center">
+  Open your Markdown files in a real editor, straight from the terminal.
+</p>
 
-**[Try it in your browser →](https://playground.better-md.dev)** &nbsp;·&nbsp;
-[better-md.dev](https://better-md.dev) &nbsp;·&nbsp;
-[How it works](#how-it-works)
+<p align="center">
+  <a href="https://github.com/Sachchaa/better-md/releases"><img src="https://img.shields.io/github/v/release/Sachchaa/better-md?color=3b6df2" alt="Latest release"></a>
+  <a href="https://github.com/Sachchaa/better-md/actions/workflows/ci.yml"><img src="https://github.com/Sachchaa/better-md/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Sachchaa/better-md?color=73736c" alt="MIT license"></a>
+</p>
 
-```bash
+<p align="center">
+  <a href="https://better-md.dev">Website</a> &nbsp;•&nbsp;
+  <a href="https://playground.better-md.dev">Playground</a> &nbsp;•&nbsp;
+  <a href="#install">Install</a> &nbsp;•&nbsp;
+  <a href="#how-it-works">How it works</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/site/screenshot-dark.png">
+    <img src="public/site/screenshot-light.png" width="900" alt="better-md showing an implementation plan: Markdown source on the left, rendered preview on the right">
+  </picture>
+</p>
+
+```sh
 curl -fsSL https://better-md.dev/install.sh | sh
 ```
 
-## Getting started
+## Why
 
-```bash
-pnpm install
-pnpm dev          # start the dev server
-pnpm build        # typecheck (tsc) + production build (dist/)
-pnpm build:cli    # embed dist/ into the CLI, compile it to dist-cli/, and make
-                  # the entry point executable
-pnpm binaries     # single-file executables into release/ (add --all for every
-                  # platform; needs network to fetch official Node builds)
-pnpm preview      # preview the production build
+Coding agents write a lot of Markdown — plans, specs, notes — and reading those in a
+terminal pager or a raw text buffer wastes what they are. Browsers render Markdown
+beautifully but cannot open files from your disk. better-md closes that gap.
 
-pnpm test         # run unit tests (Vitest)
-pnpm test:e2e     # Playwright end-to-end tests — needs `pnpm build` AND
-                  # `pnpm build:cli` first, since it spawns dist-cli/index.js
-pnpm lint         # ESLint
-pnpm format       # Prettier (write)
-```
+- **One command, any file.** `better-md --plan` opens your newest Claude Code plan. Point
+  it at a file or a directory instead and it opens that.
+- **Two-way editing.** Edit the Markdown source or the rendered preview — both stay in
+  sync. `Cmd/Ctrl+S` writes back to the real file.
+- **Keeps up with your agent.** The workspace is watched, so a plan updates on screen
+  while it is still being rewritten. Unsaved edits are never silently overwritten.
+- **Local only.** No account, no sync service, nothing leaves your machine.
+- **No Node.js required.** The runtime and the editor are both embedded in one binary.
 
-## Try it without installing
-
-<https://playground.better-md.dev> runs the editor in your browser with sample documents.
-
-Only sample documents, though — opening your own files is precisely the part that needs the
-local command, since a page served from the internet cannot read your disk. That is what
-the CLI below exists for.
+Try the editor at **[playground.better-md.dev](https://playground.better-md.dev)** — it runs
+with sample documents, since opening your own files is exactly the part that needs the
+local command.
 
 ## Install
 
-```bash
+```sh
 curl -fsSL https://better-md.dev/install.sh | sh
 ```
 
-Read it first if you'd rather not pipe a script you haven't seen — it is served as plain
-text, so <https://better-md.dev/install.sh> opens in a browser. The
-[raw copy on GitHub](https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh) is
-identical.
+Prebuilt for macOS and Linux, on arm64 and x64. The installer picks the right build,
+verifies it against the published `SHA256SUMS` — refusing to install if that does not
+match, or if the checksums are missing — and drops it in `~/.local/bin` as `better-md`,
+plus `btr-md` as a shorter alias.
 
-**No Node.js required** — the runtime is embedded in the binary, and so is the editor
-itself. One file, nothing else to install.
-
-The installer picks the right build for your platform, verifies it against the published
-`SHA256SUMS` (and refuses to install if that does not match, or if the checksums are
-missing), and drops it in `~/.local/bin` as `better-md`, plus `btr-md` as a shorter alias.
-
-Prebuilt for macOS and Linux, arm64 and x64.
-
-```bash
+```sh
 BETTER_MD_VERSION=v0.1.0 sh install.sh   # pin a release
 BETTER_MD_INSTALL=/usr/local/bin sh …    # choose the directory
 ```
 
-To uninstall, delete `better-md` and `btr-md` from your install directory. There is
-nothing else on disk.
+Rather read it first? It is served as plain text, so <https://better-md.dev/install.sh>
+opens in a browser, and the
+[copy on GitHub](https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh) is
+identical. To uninstall, delete the two files it reports — there is nothing else on disk.
 
-## Opening files from disk
+## Usage
 
-```bash
-better-md notes.md   # open a single file
-better-md ./docs     # open every markdown file in a directory
-better-md --plan     # open Claude Code's plans (~/.claude/plans), newest active
+```sh
+better-md --plan          # Claude Code's plans (~/.claude/plans), newest active
+better-md notes.md        # a single file
+better-md ./docs          # every Markdown file in a directory
+better-md --port 4321     # a fixed port instead of an ephemeral one
+better-md --no-open       # print the URL without launching a browser
 ```
 
-`btr-md` is a shorter alias for the same binary, and each name reports itself in `--help`
+`btr-md` is the same binary under a shorter name, and each name reports itself in `--help`
 and in error messages.
 
-Running from a checkout instead of an install:
-
-```bash
-pnpm build && pnpm build:cli   # build:cli embeds dist/ into the CLI
-node dist-cli/index.js notes.md
-```
-
-Edits save back to the real file with `Cmd/Ctrl+S`. See **How it works** below for what
-happens when the file changes underneath you.
+Edits save with `Cmd/Ctrl+S`. Nothing is written until you press it — auto-save would
+rewrite plan files on every stray keystroke.
 
 ## How it works
 
-better-md is a browser app, and browsers cannot open arbitrary files from disk. The CLI
-closes that gap by becoming a small local server the app talks to.
+Browsers cannot open arbitrary files from disk. The CLI closes that gap by becoming a small
+local server the editor talks to.
 
 ```
 better-md --plan
    │
    ├─ resolve one directory as the workspace          cli/resolve.ts
    ├─ start http://127.0.0.1:<ephemeral port>         cli/server.ts
-   │    ├─ serves the editor from assets embedded in the binary
+   │    ├─ serve the editor from assets embedded in the binary
    │    ├─ GET/PUT /api/doc     documents, via the confinement gateway
    │    └─ GET     /api/events  change notifications (SSE)
    ├─ watch the workspace, debounced 50ms             cli/watch.ts
    └─ open your browser at  .../?t=<token>
 ```
 
-Everything is scoped to that one directory. A fresh 32-byte token is minted per run and
-never persisted.
+Everything is scoped to that one directory, and a fresh 32-byte token is minted per run and
+never persisted. The launch URL carries `?t=<token>`; the app reads it, then strips it from
+the address bar so it never lands in your history. With a token it reads and writes real
+files; without one — a bookmark, a retyped URL, a second tab — you get the plain browser
+editor with sample documents, never a broken page.
 
-The editor's own files are embedded at build time rather than read from disk, which is
-what makes a single-file binary possible — and it removes a whole class of bug as a side
-effect: the static route resolves no paths and opens no files, so a request either names
-an embedded asset or it 404s.
+**When the file changes underneath you.** Each save carries the modification time the
+document was loaded at. If disk moved since, the write is refused and you choose: keep
+yours, or take the version on disk. If the file was _deleted_ rather than changed, there is
+no version to take, so your buffer is kept — it is now the only copy. Changes arriving
+while you have no unsaved edits just refresh silently.
 
-### Boot: which mode am I in?
+[better-md.dev](https://better-md.dev) walks through the same flow in more detail.
 
-The launch URL carries `?t=<token>`. On boot the app reads it, chooses a document source,
-and immediately strips it from the address bar so it never lands in your history or a
-copy-pasted link.
+## Security
 
-- **Token present** → the disk-backed source. Documents come from the workspace and
-  `Cmd/Ctrl+S` writes real files.
-- **No token** → the original browser-only app with its sample documents.
+The CLI runs a short-lived HTTP server on `127.0.0.1`. Because any page in your browser can
+reach a localhost port, three independent layers guard the file API:
 
-That second branch is deliberate, not incidental. Open the served page without the token —
-a bookmark, a retyped URL, a second tab — and you get the plain editor, never a broken
-one. It is also why the page itself is served without auth: only `/api/*` is gated.
+1. **Bearer token** — a fresh 32-byte token per run, required on every `/api/*` request and
+   compared in constant time. It is sent as a header, which a cross-site form or image
+   request cannot forge.
+2. **Origin validation** — requests carrying a foreign `Origin` are refused.
+3. **Path confinement** — only `.md`, `.markdown` and `.txt` files resolving inside the
+   workspace root are readable or writable, symlinks included.
 
-Both modes go through one interface (`DocSource`), so the editor itself has no idea which
-it is talking to.
+The editor's own assets are embedded in the binary, so serving them involves no path
+resolution and no filesystem access — that route cannot be walked out of.
 
-### Saving
+**Known limitation:** confinement is path-based, so a **hardlink** inside the workspace
+pointing at a file outside it is not detected. Unlike a symlink it resolves to a distinct
+inode with no path to inspect, and writes go straight through to the linked-to file.
 
-Save is explicit: nothing is written until you press `Cmd/Ctrl+S`. Auto-save would rewrite
-plan files on every stray keystroke.
+Separately, user Markdown is rendered into the editable preview via `innerHTML` and can be
+imported from arbitrary `.md` files by drag-and-drop, so `src/lib/markdown.ts` escapes all
+interpolated text and attributes and blocks `javascript:`, `vbscript:` and non-image
+`data:` URLs. See `markdown.test.ts` for the XSS cases.
 
-Each save carries the modification time the document was loaded at. If disk has moved
-since, the write is refused and you choose:
+## Not supported yet
 
-- **Keep mine** — adopt the on-disk timestamp, so your next save goes through.
-- **Take theirs** — replace your buffer with the on-disk version.
+The Markdown renderer covers headings, emphasis, inline and fenced code, links, images,
+blockquotes, horizontal rules, and ordered and unordered lists. It does **not** yet render
+**tables** or **task lists** (`- [x]`) — both appear as literal text. Worth knowing, since
+agent-written plans use them often.
 
-If the file was _deleted_ rather than changed, there is no "theirs" to take. The app says
-so and keeps your buffer, because that buffer is now the only copy of it.
+## Development
 
-### Staying in sync
+```sh
+pnpm install
+pnpm dev            # dev server
+pnpm build          # typecheck + production build into dist/
+pnpm build:cli      # embed dist/ into the CLI and compile it to dist-cli/
+pnpm binaries       # single-file executables into release/ (--all for every platform)
 
-The CLI watches the workspace and streams changes over SSE, so a plan updates in the
-editor while an agent is rewriting it:
+pnpm test           # unit tests (Vitest)
+pnpm test:e2e       # Playwright — needs pnpm build && pnpm build:cli first
+pnpm lint
+pnpm format
+```
 
-- **No unsaved edits** → the document refreshes silently.
-- **Unsaved edits** → a conflict banner. Nothing is overwritten in either direction until
-  you pick.
+Running from a checkout instead of an install:
 
-The watcher sees the app's own writes too, so every save would otherwise echo back looking
-like an external change. Those are filtered out by comparing timestamps — a save never
-raises a conflict against itself.
+```sh
+pnpm build && pnpm build:cli
+node dist-cli/index.js notes.md
+```
 
-### When something goes wrong
+### Deployment
 
-- **The stream drops** → a "Not watching for changes" notice appears, and reconnecting
-  re-reads the workspace so anything that changed during the outage is picked up.
-- **The CLI was restarted** → the page is holding a dead token. Rather than retrying
-  forever, the app tells you to reopen the URL the new run printed.
-- **A document cannot be read** — permissions, a broken symlink, deleted between startup
-  and load — it is reported by name and the rest of the workspace still opens.
-- **Unsaved edits at close** → the browser warns you before discarding them.
-
-Renaming and deleting act on the editor only, so those controls are hidden in disk-backed
-mode rather than implying a change that never reaches the file.
-
-## Deployment
-
-One Vercel project serves three things out of a single `dist/`, routed by hostname in
-`vercel.json`:
+One Vercel project serves the site, the hosted editor, and the installer out of a single
+`dist/`, routed by hostname in `vercel.json`:
 
 | URL                            | Serves                       | From                   |
 | ------------------------------ | ---------------------------- | ---------------------- |
@@ -189,33 +187,6 @@ Nothing is built to the root of `dist/`, which is what lets those host rules app
 consequence: `pnpm preview` serves `dist/` without Vercel's routing, so `/` 404s. Use
 `/site/` and `/app/` instead.
 
-## Security note
+## License
 
-User markdown is rendered into the editable preview via `innerHTML` and can be
-**imported from arbitrary `.md` files** (drag-and-drop). `src/lib/markdown.ts`
-therefore escapes all interpolated text/attributes and blocks `javascript:`,
-`vbscript:` and non-image `data:` URLs. See `markdown.test.ts` for the XSS cases.
-
-### CLI security model
-
-The CLI runs a short-lived HTTP server on `127.0.0.1` at an ephemeral port. Because
-any page in your browser can reach a localhost port, three independent layers guard
-the file API:
-
-1. **Bearer token** — a fresh 32-byte token per run, required on every `/api/*`
-   request. It arrives via the launch URL and is stripped from the address bar
-   immediately. Custom headers cannot be forged by cross-site form or image requests.
-2. **Origin validation** — requests carrying a foreign `Origin` are refused.
-3. **Path confinement** — only bare filenames with a `.md`, `.markdown`, or `.txt`
-   extension resolving inside the workspace root are readable or writable, symlinks
-   included.
-
-The editor's own assets are embedded in the binary, so serving them involves no path
-resolution and no filesystem access at all — that route cannot be walked out of.
-
-Confinement is path-based, so a **hardlink** inside the workspace pointing at a file
-outside it is not detected — unlike a symlink, it resolves to a distinct inode with no
-path to inspect, and writes to it go straight through to the linked-to file.
-
-Saves are guarded by an mtime check: if the file changed on disk since it was loaded,
-the write is refused and you choose which version wins.
+[MIT](LICENSE) © Sachin Kanishka

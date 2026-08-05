@@ -140,7 +140,11 @@ export function mdToHtml(md: string): string {
         i++
       }
       html +=
-        '<ul style="margin:.6rem 0 .6rem 1.35rem;line-height:1.75">' +
+        // list-style is set explicitly because Tailwind's preflight resets it to
+        // `none` on ul/ol, and this HTML is injected into a Tailwind-styled page.
+        // Without it, bullets and numbers vanish — for two constructs the toolbar
+        // has buttons for.
+        '<ul style="margin:.6rem 0 .6rem 1.35rem;line-height:1.75;list-style:disc">' +
         ui.map((t) => '<li style="margin:.2rem 0">' + inlineMd(t) + '</li>').join('') +
         '</ul>'
       continue
@@ -152,7 +156,7 @@ export function mdToHtml(md: string): string {
         i++
       }
       html +=
-        '<ol style="margin:.6rem 0 .6rem 1.5rem;line-height:1.75">' +
+        '<ol style="margin:.6rem 0 .6rem 1.5rem;line-height:1.75;list-style:decimal">' +
         oi.map((t) => '<li style="margin:.2rem 0">' + inlineMd(t) + '</li>').join('') +
         '</ol>'
       continue

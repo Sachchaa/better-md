@@ -69,6 +69,50 @@ test('every playground link points at the same live host', async ({ page }) => {
   }
 })
 
+test('external links open in a new tab, internal ones do not', async ({ page }) => {
+  await page.goto(PAGE)
+
+  const links = await page.locator('a').evaluateAll((all) =>
+    all.map((a) => ({
+      href: a.getAttribute('href') ?? '',
+      target: a.getAttribute('target'),
+      rel: a.getAttribute('rel'),
+    }))
+  )
+  expect(links.length).toBeGreaterThan(5)
+
+  for (const { href, target, rel } of links) {
+    if (href.startsWith('http')) {
+      expect(target, `${href} should open in a new tab`).toBe('_blank')
+      // Without noopener the opened page keeps a window.opener handle back into
+      // this one, so target="_blank" alone is not the whole fix.
+      expect(rel, `${href} needs noopener`).toContain('noopener')
+    } else {
+      // The wordmark and the in-page anchor must stay in the current tab —
+      // hijacking those into new tabs is the failure mode of a blanket rule.
+      expect(target, `${href} should stay in this tab`).toBeNull()
+    }
+  }
+})
+
+test('the hero screenshot is present and resolves', async ({ page }) => {
+  await page.goto(PAGE)
+
+  const img = page.locator('.shot img')
+  await expect(img).toBeVisible()
+  // naturalWidth is 0 when the file is missing, which a visibility check alone
+  // would not catch — a broken <img> is still "visible". Read structurally: this
+  // project has no DOM lib, so HTMLImageElement is not a name here.
+  const natural = await img.evaluate(
+    (el) => (el as unknown as { naturalWidth: number }).naturalWidth
+  )
+  expect(natural).toBeGreaterThan(500)
+
+  for (const name of ['screenshot-light.png', 'screenshot-dark.png']) {
+    await expect(fs.access(path.resolve('dist/site', name))).resolves.toBeUndefined()
+  }
+})
+
 test('the copy button reports success without a clipboard permission', async ({
   page,
   context,

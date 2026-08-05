@@ -87,6 +87,16 @@ describe('mdToHtml', () => {
   it('shows a placeholder for empty input', () => {
     expect(mdToHtml('')).toContain('Nothing to preview yet')
   })
+
+  // Regression: the inline styles set margin and line-height but not list-style,
+  // and Tailwind's preflight resets ul/ol to `list-style: none`. The result was
+  // bullets and numbers silently missing from every rendered list — including the
+  // two the toolbar has buttons for. Asserting the declaration is present is the
+  // only check available here, since jsdom computes no styles from preflight.
+  it('keeps list markers visible against a CSS reset', () => {
+    expect(mdToHtml('- one\n- two')).toContain('list-style:disc')
+    expect(mdToHtml('1. one\n2. two')).toContain('list-style:decimal')
+  })
 })
 
 describe('htmlToMd', () => {
