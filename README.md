@@ -58,9 +58,14 @@ verifies it against the published `SHA256SUMS` — refusing to install if that d
 match, or if the checksums are missing — and drops it in `~/.local/bin` as `better-md`,
 plus `btr-md` as a shorter alias.
 
+Two environment variables change what it does:
+
 ```sh
-BETTER_MD_VERSION=v0.1.0 sh install.sh   # pin a release
-BETTER_MD_INSTALL=/usr/local/bin sh …    # choose the directory
+# pin a release — also how you roll back
+curl -fsSL https://better-md.dev/install.sh | BETTER_MD_VERSION=v0.1.0 sh
+
+# install somewhere other than ~/.local/bin
+curl -fsSL https://better-md.dev/install.sh | BETTER_MD_INSTALL=/usr/local/bin sh
 ```
 
 Rather read it first? It is served as plain text, so <https://better-md.dev/install.sh>
