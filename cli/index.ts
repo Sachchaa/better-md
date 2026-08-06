@@ -7,6 +7,7 @@ import { programName } from './programName.js'
 import { ResolveError, resolveWorkspace } from './resolve.js'
 import { startServer } from './server.js'
 import { checkForUpdate, describeCheck, selfUpdate, UpdateError } from './update.js'
+import { uninstall, UninstallError } from './uninstall.js'
 import { VERSION } from './version.generated.js'
 import { watchWorkspace } from './watch.js'
 import { Workspace } from './workspace.js'
@@ -28,6 +29,16 @@ async function main(): Promise<void> {
   if (options.checkUpdates) {
     const check = await checkForUpdate(VERSION)
     process.stdout.write(`${describeCheck(check, programName())}\n`)
+    return
+  }
+
+  if (options.command === 'uninstall') {
+    const removed = await uninstall({
+      executable: packagedExecutable(),
+      log: (message) => process.stdout.write(`${message}\n`),
+    })
+    for (const file of removed) process.stdout.write(`removed ${file}\n`)
+    process.stdout.write('better-md is gone. Nothing else was left on disk.\n')
     return
   }
 
@@ -99,7 +110,7 @@ main().catch((err: unknown) => {
     process.stdout.write(`${err.message}\n`)
     process.exit(0)
   }
-  if (err instanceof UpdateError) {
+  if (err instanceof UpdateError || err instanceof UninstallError) {
     process.stderr.write(`${programName()}: ${err.message}\n`)
     process.exit(1)
   }

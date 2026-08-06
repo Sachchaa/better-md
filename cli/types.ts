@@ -14,7 +14,7 @@ export interface CliOptions {
   port: number | null
   open: boolean
   /** A subcommand that replaces the normal "open a workspace" run. */
-  command: 'update' | null
+  command: 'update' | 'uninstall' | null
   /** --check-updates: report whether a newer release exists, then exit. */
   checkUpdates: boolean
 }

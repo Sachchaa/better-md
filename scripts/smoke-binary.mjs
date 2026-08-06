@@ -118,6 +118,33 @@ try {
     `exit ${helpRun.code}`
   )
 
+  // --- it can remove itself, alias included --------------------------------
+  // Against copies in a temp directory, never the artifact under test: CI uploads
+  // that file afterwards, and a smoke check that deletes its own subject would
+  // break the job it belongs to.
+  const rmDir = await fs.mkdtemp(path.join(os.tmpdir(), 'btr-uninstall-'))
+  await fs.copyFile(binary, path.join(rmDir, 'better-md'))
+  await fs.copyFile(binary, path.join(rmDir, 'btr-md'))
+  await fs.writeFile(path.join(rmDir, 'unrelated'), 'not ours', 'utf8')
+  await fs.chmod(path.join(rmDir, 'better-md'), 0o755)
+  await fs.chmod(path.join(rmDir, 'btr-md'), 0o755)
+
+  const removal = await new Promise((resolve) => {
+    const c = spawn(path.join(rmDir, 'better-md'), ['uninstall'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    c.stdout.on('data', (d) => (out += d))
+    c.on('exit', (code) => resolve({ out, code }))
+  })
+  const leftBehind = await fs.readdir(rmDir)
+  check(
+    'uninstall removes the binary and its alias, keeping unrelated files',
+    removal.code === 0 && leftBehind.length === 1 && leftBehind[0] === 'unrelated',
+    `left: ${leftBehind.join(', ') || 'nothing'}`
+  )
+  await fs.rm(rmDir, { recursive: true, force: true })
+
   // --- it serves the embedded editor with no dist/ anywhere ----------------
   server = await start(['--no-open', ws])
   const origin = new URL(server.url).origin

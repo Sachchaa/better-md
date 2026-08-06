@@ -11,7 +11,7 @@
 #   BETTER_MD_VERSION   release tag to install (default: latest)
 #   BETTER_MD_INSTALL   install directory   (default: $HOME/.local/bin)
 #
-# Uninstall: delete the two files it reports at the end.
+# Uninstall: `better-md uninstall` (removes the binary and its btr-md alias).
 
 set -eu
 
@@ -118,6 +118,7 @@ say "    better-md ./docs      every Markdown file in a directory"
 say ""
 say "    better-md --help      all commands and options"
 say "    better-md update      upgrade to the latest release"
+say "    better-md uninstall   remove it again, alias included"
 say ""
 
 case ":$PATH:" in

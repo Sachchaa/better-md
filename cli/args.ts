@@ -28,6 +28,7 @@ Usage:
   ${name} <directory>      open every markdown file in a directory
   ${name} --plan           open Claude Code's plans (~/.claude/plans)
   ${name} update           replace this binary with the latest release
+  ${name} uninstall        remove better-md and its btr-md alias
 
 Options:
   --port <n>        listen on a specific port (default: 8080, or a free port if taken)
@@ -36,7 +37,8 @@ Options:
   --version         print the version
   --help            show this message
 
-To open a file or directory literally named "update", write ./update.`
+To open a file or directory literally named "update" or "uninstall", prefix it
+with ./ — for example ./update.`
 }
 
 function parsePort(raw: string): number {
@@ -97,14 +99,22 @@ export function parseCliArgs(argv: string[]): CliOptions {
   // "only when no such file exists", because a rule that changes with the
   // contents of the current directory is worse than one that is always true —
   // `./update` is the documented way to mean the path.
-  const command = target === 'update' ? 'update' : null
+  // `remove` is accepted but not advertised: someone will type it, and a dead
+  // end there is worse than an alias. `uninstall` is the documented name because
+  // in a document editor "remove" reads like "delete this document".
+  const command =
+    target === 'update'
+      ? 'update'
+      : target === 'uninstall' || target === 'remove'
+        ? 'uninstall'
+        : null
   const checkUpdates = values['check-updates'] === true
 
   // `update` and `--check-updates` do not open anything, so they take no target
   // and no --plan. Rejecting the combination beats silently ignoring half of what
   // was typed.
   if (command !== null || checkUpdates) {
-    const action = command !== null ? 'update' : '--check-updates'
+    const action = command ?? '--check-updates'
     if (values.plan === true) throw new UsageError(`${action} cannot be combined with --plan`)
     if (checkUpdates && target !== null) {
       throw new UsageError(`--check-updates cannot be combined with a file or directory argument`)

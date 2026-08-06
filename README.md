@@ -71,7 +71,32 @@ curl -fsSL https://better-md.dev/install.sh | BETTER_MD_INSTALL=/usr/local/bin s
 Rather read it first? It is served as plain text, so <https://better-md.dev/install.sh>
 opens in a browser, and the
 [copy on GitHub](https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh) is
-identical. To uninstall, delete the two files it reports — there is nothing else on disk.
+identical.
+
+### Uninstalling
+
+```sh
+better-md uninstall
+```
+
+It removes both `better-md` and the `btr-md` alias and reports each file. That is
+why the command exists rather than just documenting `rm`: the obvious
+`rm $(command -v better-md)` leaves the alias behind — still on your `PATH`, still
+110 MB. A `btr-md` that is _not_ a copy of the running binary is left alone and
+said so, since it belongs to someone else.
+
+`remove` is accepted as an alias for the same thing.
+
+By hand, if you prefer:
+
+```sh
+rm ~/.local/bin/better-md ~/.local/bin/btr-md
+```
+
+There is genuinely nothing else. better-md writes no config, cache or state
+directory, and the editor stores nothing in the browser — the only files it ever
+writes are the documents you save and, during `update`, a staging file it renames
+over itself.
 
 ### Updating
 
@@ -105,9 +130,11 @@ better-md --no-open       # print the URL without launching a browser
 better-md --version       # what you have
 better-md --check-updates # whether a newer release exists
 better-md update          # replace this binary with the latest release
+better-md uninstall       # remove better-md and its btr-md alias
 ```
 
-To open a file or directory literally named `update`, write `./update`.
+To open a file or directory literally named `update` or `uninstall`, prefix it with
+`./`.
 
 `btr-md` is the same binary under a shorter name, and each name reports itself in `--help`
 and in error messages.

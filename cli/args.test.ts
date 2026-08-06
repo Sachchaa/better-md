@@ -100,6 +100,30 @@ describe('parseCliArgs', () => {
     expect(opts.target).toBe('./update')
   })
 
+  it('takes uninstall as a subcommand', () => {
+    const opts = parseCliArgs(['uninstall'])
+    expect(opts.command).toBe('uninstall')
+    expect(opts.target).toBeNull()
+  })
+
+  // Accepted but not advertised: someone will reach for `remove`, and a dead end
+  // there is worse than an alias. It maps onto the same command.
+  it('accepts remove as an alias for uninstall', () => {
+    expect(parseCliArgs(['remove']).command).toBe('uninstall')
+  })
+
+  it('treats ./uninstall as a path, not the subcommand', () => {
+    expect(parseCliArgs(['./uninstall']).command).toBeNull()
+    expect(parseCliArgs(['./uninstall']).target).toBe('./uninstall')
+  })
+
+  it('names the actual action when it conflicts with --plan', () => {
+    // The message used to hardcode "update", so an uninstall conflict reported
+    // the wrong command back at the user.
+    expect(() => parseCliArgs(['uninstall', '--plan'])).toThrow(/uninstall cannot be combined/)
+    expect(() => parseCliArgs(['update', '--plan'])).toThrow(/update cannot be combined/)
+  })
+
   it('parses --check-updates with no target', () => {
     const opts = parseCliArgs(['--check-updates'])
     expect(opts.checkUpdates).toBe(true)
