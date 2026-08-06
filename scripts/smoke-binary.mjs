@@ -134,15 +134,31 @@ try {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
+    let err = ''
     c.stdout.on('data', (d) => (out += d))
-    c.on('exit', (code) => resolve({ out, code }))
+    c.stderr.on('data', (d) => (err += d))
+    c.on('exit', (code) => resolve({ out, err, code }))
   })
-  const leftBehind = await fs.readdir(rmDir)
-  check(
-    'uninstall removes the binary and its alias, keeping unrelated files',
-    removal.code === 0 && leftBehind.length === 1 && leftBehind[0] === 'unrelated',
-    `left: ${leftBehind.join(', ') || 'nothing'}`
-  )
+  const leftBehind = (await fs.readdir(rmDir)).sort()
+
+  // Two real outcomes, chosen by what the target actually is rather than by a
+  // guess. A packaged binary must remove itself and its alias; anything that is
+  // not one — the dev shim that runs dist-cli through node, say — must refuse and
+  // leave every file alone. Both are assertions; neither is a skip that passes
+  // without testing anything.
+  if (removal.err.includes('not an installed build')) {
+    check(
+      'uninstall refuses on a non-packaged build, touching nothing',
+      removal.code === 1 && leftBehind.join(',') === 'better-md,btr-md,unrelated',
+      'dev shim, not a packaged binary'
+    )
+  } else {
+    check(
+      'uninstall removes the binary and its alias, keeping unrelated files',
+      removal.code === 0 && leftBehind.join(',') === 'unrelated',
+      `left: ${leftBehind.join(', ') || 'nothing'}`
+    )
+  }
   await fs.rm(rmDir, { recursive: true, force: true })
 
   // --- it serves the embedded editor with no dist/ anywhere ----------------

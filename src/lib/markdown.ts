@@ -120,6 +120,91 @@ function tableAt(lines: string[], i: number): Align[] | null {
   return splitRow(lines[i]).length === aligns.length ? aligns : null
 }
 
+/** One list line: `- text`, `* text`, `+ text` or `1. text`, with its indent. */
+const LIST_ITEM = /^([ \t]*)([-*+]|\d+\.)[ \t]+(.*)$/
+
+interface ListItem {
+  text: string
+  children: ListNode | null
+}
+interface ListNode {
+  ordered: boolean
+  items: ListItem[]
+}
+
+/** Indent in columns. A tab counts as four, the usual Markdown convention. */
+function indentWidth(ws: string): number {
+  let n = 0
+  for (const ch of ws) n += ch === '\t' ? 4 : 1
+  return n
+}
+
+/**
+ * Turn a run of list lines into a tree, using relative indentation.
+ *
+ * Relative rather than a fixed step, because `- ` and `1. ` are different widths
+ * and real documents mix two- and three-space children accordingly. Anything
+ * indented further than the current level starts a nested list; anything less
+ * closes levels until it fits.
+ */
+function buildList(entries: Array<{ indent: number; ordered: boolean; text: string }>): ListNode {
+  const root: ListNode = { ordered: entries[0].ordered, items: [] }
+  const stack = [{ indent: entries[0].indent, node: root }]
+
+  for (const entry of entries) {
+    while (stack.length > 1 && entry.indent < stack[stack.length - 1].indent) stack.pop()
+    let top = stack[stack.length - 1]
+
+    if (entry.indent > top.indent) {
+      const parent = top.node.items[top.node.items.length - 1]
+      // A deeper line with no parent item above it cannot nest into anything, so
+      // it joins the current level rather than being dropped.
+      if (parent !== undefined) {
+        const child: ListNode = { ordered: entry.ordered, items: [] }
+        parent.children = child
+        stack.push({ indent: entry.indent, node: child })
+        top = stack[stack.length - 1]
+      }
+    }
+    top.node.items.push({ text: entry.text, children: null })
+  }
+  return root
+}
+
+function renderList(node: ListNode): string {
+  const tag = node.ordered ? 'ol' : 'ul'
+  // list-style is set explicitly because Tailwind's preflight resets it to
+  // `none` on ul/ol, and this HTML is injected into a Tailwind-styled page.
+  // Without it, bullets and numbers vanish — for two constructs the toolbar
+  // has buttons for.
+  const style = node.ordered
+    ? 'margin:.6rem 0 .6rem 1.5rem;line-height:1.75;list-style:decimal'
+    : 'margin:.6rem 0 .6rem 1.35rem;line-height:1.75;list-style:disc'
+  return (
+    `<${tag} style="${style}">` +
+    node.items
+      .map((item) => {
+        const task = /^\[([ xX])\]\s+(.*)$/.exec(item.text)
+        // `disabled` is deliberate. The preview is contenteditable, and a live
+        // checkbox would let a click change the DOM's checked *property* while
+        // the attribute htmlToMd reads stays put — the box would flip on screen
+        // and then snap back on the next render. Editing happens in the source.
+        const body =
+          task === null
+            ? inlineMd(item.text)
+            : '<input type="checkbox" disabled' +
+              (task[1] === ' ' ? '' : ' checked') +
+              ' style="margin-right:.5rem;vertical-align:middle"/>' +
+              inlineMd(task[2])
+        const liStyle = task === null ? 'margin:.2rem 0' : 'margin:.2rem 0;list-style:none'
+        const nested = item.children === null ? '' : renderList(item.children)
+        return `<li style="${liStyle}">${body}${nested}</li>`
+      })
+      .join('') +
+    `</${tag}>`
+  )
+}
+
 export function mdToHtml(md: string): string {
   const lines = (md || '').replace(/\r\n/g, '\n').split('\n')
   let html = ''
@@ -233,49 +318,18 @@ export function mdToHtml(md: string): string {
         '</tbody></table>'
       continue
     }
-    if (/^\s*[-*+]\s+/.test(line)) {
-      const ui: string[] = []
-      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-        ui.push(lines[i].replace(/^\s*[-*+]\s+/, ''))
+    if (LIST_ITEM.test(line)) {
+      const entries: Array<{ indent: number; ordered: boolean; text: string }> = []
+      for (let m = LIST_ITEM.exec(lines[i]); i < lines.length && m !== null; ) {
+        entries.push({
+          indent: indentWidth(m[1]),
+          ordered: /\d/.test(m[2]),
+          text: m[3],
+        })
         i++
+        m = i < lines.length ? LIST_ITEM.exec(lines[i]) : null
       }
-      html +=
-        // list-style is set explicitly because Tailwind's preflight resets it to
-        // `none` on ul/ol, and this HTML is injected into a Tailwind-styled page.
-        // Without it, bullets and numbers vanish — for two constructs the toolbar
-        // has buttons for.
-        '<ul style="margin:.6rem 0 .6rem 1.35rem;line-height:1.75;list-style:disc">' +
-        ui
-          .map((t) => {
-            const task = /^\[([ xX])\]\s+(.*)$/.exec(t)
-            if (task === null) return '<li style="margin:.2rem 0">' + inlineMd(t) + '</li>'
-            // `disabled` is deliberate. The preview is contenteditable, and a live
-            // checkbox would let a click change the DOM's checked *property* while
-            // the attribute htmlToMd reads stays put — the box would flip on screen
-            // and then snap back on the next render. Editing happens in the source.
-            return (
-              '<li style="margin:.2rem 0;list-style:none">' +
-              '<input type="checkbox" disabled' +
-              (task[1] === ' ' ? '' : ' checked') +
-              ' style="margin-right:.5rem;vertical-align:middle"/>' +
-              inlineMd(task[2]) +
-              '</li>'
-            )
-          })
-          .join('') +
-        '</ul>'
-      continue
-    }
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const oi: string[] = []
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        oi.push(lines[i].replace(/^\s*\d+\.\s+/, ''))
-        i++
-      }
-      html +=
-        '<ol style="margin:.6rem 0 .6rem 1.5rem;line-height:1.75;list-style:decimal">' +
-        oi.map((t) => '<li style="margin:.2rem 0">' + inlineMd(t) + '</li>').join('') +
-        '</ol>'
+      html += renderList(buildList(entries))
       continue
     }
     const buf: string[] = []
@@ -285,8 +339,7 @@ export function mdToHtml(md: string): string {
       !/^(#{1,6})\s/.test(lines[i]) &&
       !/^[ \t]*```/.test(lines[i]) &&
       !/^>\s?/.test(lines[i]) &&
-      !/^\s*[-*+]\s+/.test(lines[i]) &&
-      !/^\s*\d+\.\s+/.test(lines[i]) &&
+      !LIST_ITEM.test(lines[i]) &&
       !/^(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
       // Without this the paragraph buffer swallows a table that follows prose
       // directly, header row and all.
@@ -313,6 +366,44 @@ export function htmlToMd(root: HTMLElement): string {
   function liText(li: Node): string {
     return kids(li).replace(/\n+/g, ' ').trim()
   }
+  /**
+   * Serialise a list, recursing into nested ones.
+   *
+   * Children are indented by the parent's marker width — two columns under `- `,
+   * three under `1. ` — because that is what makes the nesting survive a reparse
+   * by this module and by every other Markdown tool that reads the file.
+   */
+  function listMd(el: HTMLElement, indent: string): string {
+    const ordered = el.tagName.toLowerCase() === 'ol'
+    let n = 1
+    let out = ''
+    for (const child of Array.from(el.children)) {
+      if (child.tagName !== 'LI') continue
+      const marker = ordered ? `${n++}. ` : '- '
+
+      let own = ''
+      let nested = ''
+      let mark = ''
+      child.childNodes.forEach((node) => {
+        const tag = (node as HTMLElement).tagName
+        if (tag === 'UL' || tag === 'OL') {
+          nested += listMd(node as HTMLElement, indent + ' '.repeat(marker.length))
+          return
+        }
+        if (tag === 'INPUT' && (node as HTMLElement).getAttribute('type') === 'checkbox') {
+          // hasAttribute, not .checked: the box is disabled precisely so the
+          // attribute stays the source of truth.
+          mark = (node as HTMLElement).hasAttribute('checked') ? '[x] ' : '[ ] '
+          return
+        }
+        own += ser(node)
+      })
+
+      out += indent + marker + mark + own.replace(/\n+/g, ' ').trim() + '\n' + nested
+    }
+    return out
+  }
+
   function ser(node: Node): string {
     if (node.nodeType === 3) {
       return (node.nodeValue || '').replace(/\s+/g, ' ')
@@ -394,26 +485,9 @@ export function htmlToMd(root: HTMLElement): string {
       case 'input':
         // Rendered by the ul case as the `[x]` marker; on its own it is not text.
         return ''
-      case 'ul': {
-        let s = '\n'
-        el.childNodes.forEach((li) => {
-          if ((li as HTMLElement).tagName !== 'LI') return
-          const box = (li as HTMLElement).querySelector('input[type="checkbox"]')
-          // hasAttribute, not .checked: the box is disabled precisely so the
-          // attribute stays the source of truth.
-          const mark = box === null ? '' : box.hasAttribute('checked') ? '[x] ' : '[ ] '
-          s += '- ' + mark + liText(li) + '\n'
-        })
-        return s + '\n'
-      }
-      case 'ol': {
-        let s2 = '\n'
-        let n = 1
-        el.childNodes.forEach((li) => {
-          if ((li as HTMLElement).tagName === 'LI') s2 += n++ + '. ' + liText(li) + '\n'
-        })
-        return s2 + '\n'
-      }
+      case 'ul':
+      case 'ol':
+        return '\n' + listMd(el, '') + '\n'
       case 'li':
         return liText(el)
       case 'p':

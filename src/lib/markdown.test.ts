@@ -232,3 +232,82 @@ describe('task lists', () => {
     expect(htmlToMd(div)).toBe(md)
   })
 })
+
+describe('nested lists', () => {
+  /** Render, then serialise straight back. */
+  function roundTrip(md: string): string {
+    const div = document.createElement('div')
+    div.innerHTML = mdToHtml(md)
+    return htmlToMd(div)
+  }
+
+  it('nests a deeper item inside its parent', () => {
+    const html = mdToHtml('- a\n  - b')
+    // The child belongs inside the parent's <li>, not as a sibling of it.
+    expect(html).toMatch(/<li[^>]*>a<ul[^>]*>.*b.*<\/ul><\/li>/)
+  })
+
+  it('keeps a flat list flat', () => {
+    const html = mdToHtml('- a\n- b')
+    expect(html).not.toMatch(/<ul[^>]*>[\s\S]*<ul/)
+  })
+
+  it('handles three levels', () => {
+    const html = mdToHtml('- a\n  - b\n    - c')
+    expect((html.match(/<ul/g) ?? []).length).toBe(3)
+  })
+
+  it('returns to the outer level after a nested block', () => {
+    const html = mdToHtml('- a\n  - b\n- c')
+    expect((html.match(/<ul/g) ?? []).length).toBe(2)
+    // `c` is a sibling of `a`, so the outer list has two items at top level.
+    const outer = /<ul[^>]*>([\s\S]*)<\/ul>/.exec(html)?.[1] ?? ''
+    expect(outer.split('<li').length - 1).toBeGreaterThanOrEqual(3)
+  })
+
+  it('nests an ordered list inside an unordered one', () => {
+    const html = mdToHtml('- a\n  1. one\n  2. two')
+    expect(html).toContain('<ol')
+    expect(html).toMatch(/<li[^>]*>a<ol/)
+  })
+
+  it('nests a task list', () => {
+    const html = mdToHtml('- parent\n  - [x] done')
+    expect(html).toContain('type="checkbox"')
+    expect(html).toMatch(/<li[^>]*>parent<ul/)
+  })
+
+  it('treats a tab as indentation', () => {
+    expect(mdToHtml('- a\n\t- b')).toMatch(/<li[^>]*>a<ul/)
+  })
+
+  it('round-trips two levels', () => {
+    expect(roundTrip('- a\n  - b')).toBe('- a\n  - b')
+  })
+
+  it('round-trips three levels and a return to the top', () => {
+    const md = '- a\n  - b\n    - c\n- d'
+    expect(roundTrip(md)).toBe(md)
+  })
+
+  it('round-trips an ordered list nested in a bullet', () => {
+    const md = '- a\n  1. one\n  2. two'
+    expect(roundTrip(md)).toBe(md)
+  })
+
+  it('round-trips a bullet nested in an ordered list', () => {
+    // The child indents past `1. `, which is three characters wide, not two.
+    const md = '1. one\n   - a\n   - b'
+    expect(roundTrip(md)).toBe(md)
+  })
+
+  it('round-trips nested task list items', () => {
+    const md = '- parent\n  - [x] done\n  - [ ] todo'
+    expect(roundTrip(md)).toBe(md)
+  })
+
+  it('still round-trips a flat list', () => {
+    expect(roundTrip('- one\n- two')).toBe('- one\n- two')
+    expect(roundTrip('1. one\n2. two')).toBe('1. one\n2. two')
+  })
+})

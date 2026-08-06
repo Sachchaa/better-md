@@ -205,13 +205,13 @@ interpolated text and attributes and blocks `javascript:`, `vbscript:` and non-i
 ## What the renderer covers
 
 Headings, emphasis, inline and fenced code, links, images, blockquotes, horizontal rules,
-ordered and unordered lists, **tables** (with column alignment and escaped `\|` in cells),
-and **task lists** (`- [x]`). Those last two matter because agent-written plans lean on
-them.
+**tables** (with column alignment and escaped `\|` in cells), **task lists** (`- [x]`), and
+**nested lists** to any depth, mixing bullets and numbers. Those are the constructs
+agent-written plans lean on.
 
-Not handled: nested lists, reference-style links, footnotes, and setext headings. Raw HTML
-in a document is escaped rather than passed through — deliberately, since the preview is
-rendered with `innerHTML` (see [Security](#security)).
+Not handled: reference-style links, footnotes, setext headings, and paragraphs continued
+under a list item. Raw HTML in a document is escaped rather than passed through —
+deliberately, since the preview is rendered with `innerHTML` (see [Security](#security)).
 
 ## Development
 
