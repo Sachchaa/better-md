@@ -175,12 +175,16 @@ imported from arbitrary `.md` files by drag-and-drop, so `src/lib/markdown.ts` e
 interpolated text and attributes and blocks `javascript:`, `vbscript:` and non-image
 `data:` URLs. See `markdown.test.ts` for the XSS cases.
 
-## Not supported yet
+## What the renderer covers
 
-The Markdown renderer covers headings, emphasis, inline and fenced code, links, images,
-blockquotes, horizontal rules, and ordered and unordered lists. It does **not** yet render
-**tables** or **task lists** (`- [x]`) — both appear as literal text. Worth knowing, since
-agent-written plans use them often.
+Headings, emphasis, inline and fenced code, links, images, blockquotes, horizontal rules,
+ordered and unordered lists, **tables** (with column alignment and escaped `\|` in cells),
+and **task lists** (`- [x]`). Those last two matter because agent-written plans lean on
+them.
+
+Not handled: nested lists, reference-style links, footnotes, and setext headings. Raw HTML
+in a document is escaped rather than passed through — deliberately, since the preview is
+rendered with `innerHTML` (see [Security](#security)).
 
 ## Development
 

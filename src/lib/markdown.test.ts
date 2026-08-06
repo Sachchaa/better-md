@@ -125,3 +125,110 @@ describe('htmlToMd', () => {
     expect(htmlToMd(div)).toBe(md)
   })
 })
+
+describe('tables', () => {
+  const simple = ['| Name | Role |', '| --- | --- |', '| Ada | Analyst |'].join('\n')
+
+  it('renders a pipe table as a real table', () => {
+    const html = mdToHtml(simple)
+    expect(html).toContain('<table')
+    expect(html).toContain('<th')
+    expect(html).toContain('Name')
+    expect(html).toContain('<td')
+    expect(html).toContain('Ada')
+  })
+
+  it('requires a delimiter row, so prose containing pipes stays a paragraph', () => {
+    // `a | b` in ordinary text must not become a table, or writing about pipes
+    // silently mangles the document.
+    const html = mdToHtml('choose a | b as the separator')
+    expect(html).not.toContain('<table')
+    expect(html).toContain('<p')
+  })
+
+  it('applies column alignment from the delimiter row', () => {
+    const html = mdToHtml(['| L | C | R |', '| :-- | :-: | --: |', '| 1 | 2 | 3 |'].join('\n'))
+    expect(html).toContain('text-align:left')
+    expect(html).toContain('text-align:center')
+    expect(html).toContain('text-align:right')
+  })
+
+  it('renders inline markdown inside cells', () => {
+    const html = mdToHtml(['| a |', '| --- |', '| **bold** |'].join('\n'))
+    expect(html).toContain('<strong>bold</strong>')
+  })
+
+  it('escapes cell content rather than trusting it', () => {
+    const div = document.createElement('div')
+    div.innerHTML = mdToHtml(['| a |', '| --- |', '| <img src=x onerror=alert(1)> |'].join('\n'))
+
+    // Asserted against the parsed DOM, not the string. The escaped form still
+    // *contains* "onerror=alert" as literal text, which is exactly the safe
+    // outcome — a substring check would fail on correct behaviour. What matters
+    // is that no element was created from it.
+    expect(div.querySelector('img')).toBeNull()
+    expect(div.querySelector('td')?.textContent).toBe('<img src=x onerror=alert(1)>')
+  })
+
+  it('honours an escaped pipe inside a cell', () => {
+    const html = mdToHtml(['| a | b |', '| --- | --- |', String.raw`| x \| y | z |`].join('\n'))
+    // Two columns, not three: the escaped pipe is content.
+    expect(html).toContain('x | y')
+    expect((html.match(/<td/g) ?? []).length).toBe(2)
+  })
+
+  it('serialises a table back to pipes', () => {
+    const div = document.createElement('div')
+    div.innerHTML = mdToHtml(simple)
+    expect(htmlToMd(div)).toBe(simple)
+  })
+
+  it('round-trips alignment', () => {
+    const md = ['| L | C | R |', '| :-- | :-: | --: |', '| 1 | 2 | 3 |'].join('\n')
+    const div = document.createElement('div')
+    div.innerHTML = mdToHtml(md)
+    expect(htmlToMd(div)).toBe(md)
+  })
+
+  it('round-trips a pipe inside a cell without splitting the column', () => {
+    const md = ['| a | b |', '| --- | --- |', String.raw`| x \| y | z |`].join('\n')
+    const div = document.createElement('div')
+    div.innerHTML = mdToHtml(md)
+    expect(htmlToMd(div)).toBe(md)
+  })
+})
+
+describe('task lists', () => {
+  it('renders checked and unchecked boxes', () => {
+    const html = mdToHtml('- [x] done\n- [ ] todo')
+    expect(html).toContain('type="checkbox"')
+    expect(html).toContain('checked')
+    // The literal brackets must be gone, not merely accompanied by a box.
+    expect(html).not.toContain('[x]')
+    expect(html).not.toContain('[ ]')
+  })
+
+  it('leaves an ordinary list item alone', () => {
+    const html = mdToHtml('- plain')
+    expect(html).not.toContain('type="checkbox"')
+    expect(html).toContain('list-style:disc')
+  })
+
+  it('renders inline markdown in the task text', () => {
+    expect(mdToHtml('- [ ] ship **it**')).toContain('<strong>it</strong>')
+  })
+
+  it('round-trips checked and unchecked items', () => {
+    const md = '- [x] done\n- [ ] todo'
+    const div = document.createElement('div')
+    div.innerHTML = mdToHtml(md)
+    expect(htmlToMd(div)).toBe(md)
+  })
+
+  it('does not turn a plain list into a task list on the way back', () => {
+    const md = '- one\n- two'
+    const div = document.createElement('div')
+    div.innerHTML = mdToHtml(md)
+    expect(htmlToMd(div)).toBe(md)
+  })
+})

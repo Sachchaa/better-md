@@ -59,6 +59,67 @@ export function inlineMd(s: string): string {
   return s
 }
 
+/**
+ * Split a table row on unescaped pipes.
+ *
+ * `\|` is content, not a separator — without that a cell mentioning a pipe
+ * silently gains a column and shifts every value after it.
+ */
+function splitRow(line: string): string[] {
+  const cells: string[] = []
+  let cur = ''
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '\\' && line[i + 1] === '|') {
+      cur += '|'
+      i++
+      continue
+    }
+    if (line[i] === '|') {
+      cells.push(cur)
+      cur = ''
+      continue
+    }
+    cur += line[i]
+  }
+  cells.push(cur)
+  // Outer pipes are optional decoration, so the empty cells they create are not
+  // columns. Only the outermost ones — `| | b |` keeps its empty first column.
+  if (cells.length > 1 && cells[0].trim() === '') cells.shift()
+  if (cells.length > 1 && cells[cells.length - 1].trim() === '') cells.pop()
+  return cells.map((c) => c.trim())
+}
+
+type Align = 'left' | 'center' | 'right' | null
+
+/**
+ * Read a delimiter row (`| :-- | :-: | --: |`) into per-column alignments, or
+ * null when the line is not one.
+ *
+ * The delimiter row is what separates a table from prose that happens to contain
+ * pipes, so this doubles as the detector.
+ */
+function delimiterAligns(line: string): Align[] | null {
+  if (!line.includes('-') || !line.includes('|')) return null
+  const cells = splitRow(line)
+  if (cells.length === 0) return null
+  const aligns: Align[] = []
+  for (const cell of cells) {
+    if (!/^:?-+:?$/.test(cell)) return null
+    const left = cell.startsWith(':')
+    const right = cell.endsWith(':')
+    aligns.push(left && right ? 'center' : right ? 'right' : left ? 'left' : null)
+  }
+  return aligns
+}
+
+/** A table begins with a header row followed by a matching delimiter row. */
+function tableAt(lines: string[], i: number): Align[] | null {
+  if (i + 1 >= lines.length || !lines[i].includes('|')) return null
+  const aligns = delimiterAligns(lines[i + 1])
+  if (aligns === null) return null
+  return splitRow(lines[i]).length === aligns.length ? aligns : null
+}
+
 export function mdToHtml(md: string): string {
   const lines = (md || '').replace(/\r\n/g, '\n').split('\n')
   let html = ''
@@ -133,6 +194,45 @@ export function mdToHtml(md: string): string {
         '</blockquote>'
       continue
     }
+    const aligns = tableAt(lines, i)
+    if (aligns !== null) {
+      const header = splitRow(lines[i])
+      i += 2
+      const body: string[][] = []
+      while (i < lines.length && lines[i].includes('|') && !/^\s*$/.test(lines[i])) {
+        body.push(splitRow(lines[i]))
+        i++
+      }
+      const cellStyle = (n: number, extra: string): string => {
+        const align = aligns[n]
+        return (
+          ` style="border:1px solid var(--border);padding:.4rem .6rem${extra}` +
+          (align === null ? '' : `;text-align:${align}`) +
+          '"'
+        )
+      }
+      html +=
+        '<table style="margin:.95rem 0;border-collapse:collapse;width:100%;font-size:.95em">' +
+        '<thead><tr>' +
+        header
+          .map((c, n) => `<th${cellStyle(n, ';background:var(--code-bg)')}>${inlineMd(c)}</th>`)
+          .join('') +
+        '</tr></thead><tbody>' +
+        body
+          .map(
+            (row) =>
+              '<tr>' +
+              // Ragged rows are padded rather than dropped: a short row in a plan
+              // should still render, not vanish.
+              aligns
+                .map((_, n) => `<td${cellStyle(n, '')}>${inlineMd(row[n] ?? '')}</td>`)
+                .join('') +
+              '</tr>'
+          )
+          .join('') +
+        '</tbody></table>'
+      continue
+    }
     if (/^\s*[-*+]\s+/.test(line)) {
       const ui: string[] = []
       while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
@@ -145,7 +245,24 @@ export function mdToHtml(md: string): string {
         // Without it, bullets and numbers vanish — for two constructs the toolbar
         // has buttons for.
         '<ul style="margin:.6rem 0 .6rem 1.35rem;line-height:1.75;list-style:disc">' +
-        ui.map((t) => '<li style="margin:.2rem 0">' + inlineMd(t) + '</li>').join('') +
+        ui
+          .map((t) => {
+            const task = /^\[([ xX])\]\s+(.*)$/.exec(t)
+            if (task === null) return '<li style="margin:.2rem 0">' + inlineMd(t) + '</li>'
+            // `disabled` is deliberate. The preview is contenteditable, and a live
+            // checkbox would let a click change the DOM's checked *property* while
+            // the attribute htmlToMd reads stays put — the box would flip on screen
+            // and then snap back on the next render. Editing happens in the source.
+            return (
+              '<li style="margin:.2rem 0;list-style:none">' +
+              '<input type="checkbox" disabled' +
+              (task[1] === ' ' ? '' : ' checked') +
+              ' style="margin-right:.5rem;vertical-align:middle"/>' +
+              inlineMd(task[2]) +
+              '</li>'
+            )
+          })
+          .join('') +
         '</ul>'
       continue
     }
@@ -170,7 +287,10 @@ export function mdToHtml(md: string): string {
       !/^>\s?/.test(lines[i]) &&
       !/^\s*[-*+]\s+/.test(lines[i]) &&
       !/^\s*\d+\.\s+/.test(lines[i]) &&
-      !/^(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])
+      !/^(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
+      // Without this the paragraph buffer swallows a table that follows prose
+      // directly, header row and all.
+      tableAt(lines, i) === null
     ) {
       buf.push(lines[i])
       i++
@@ -246,10 +366,43 @@ export function htmlToMd(root: HTMLElement): string {
             .join('\n') +
           '\n\n'
         )
+      case 'table': {
+        const trs = Array.from(el.querySelectorAll('tr'))
+        if (trs.length === 0) return ''
+        const cellsOf = (tr: Element): Element[] => Array.from(tr.children)
+        // A pipe in a cell has to go back out escaped, or the next parse splits
+        // the column that this one just round-tripped correctly.
+        const row = (cells: Element[]): string =>
+          '| ' + cells.map((c) => kids(c).trim().replace(/\|/g, '\\|')).join(' | ') + ' |'
+        const head = cellsOf(trs[0])
+        const delim = head.map((c) => {
+          switch ((c as HTMLElement).style.textAlign) {
+            case 'left':
+              return ':--'
+            case 'center':
+              return ':-:'
+            case 'right':
+              return '--:'
+            default:
+              return '---'
+          }
+        })
+        const out = [row(head), '| ' + delim.join(' | ') + ' |']
+        for (const tr of trs.slice(1)) out.push(row(cellsOf(tr)))
+        return '\n' + out.join('\n') + '\n\n'
+      }
+      case 'input':
+        // Rendered by the ul case as the `[x]` marker; on its own it is not text.
+        return ''
       case 'ul': {
         let s = '\n'
         el.childNodes.forEach((li) => {
-          if ((li as HTMLElement).tagName === 'LI') s += '- ' + liText(li) + '\n'
+          if ((li as HTMLElement).tagName !== 'LI') return
+          const box = (li as HTMLElement).querySelector('input[type="checkbox"]')
+          // hasAttribute, not .checked: the box is disabled precisely so the
+          // attribute stays the source of truth.
+          const mark = box === null ? '' : box.hasAttribute('checked') ? '[x] ' : '[ ] '
+          s += '- ' + mark + liText(li) + '\n'
         })
         return s + '\n'
       }
