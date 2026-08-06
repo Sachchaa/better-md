@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag whose published binaries should be smoke-tested (e.g. v0.3.0)'
+        description: 'Release tag whose published binaries should be smoke-tested (e.g. v0.3.1)'
         required: false
         type: string
 
