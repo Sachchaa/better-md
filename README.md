@@ -1,7 +1,7 @@
 <h1 align="center">better-md</h1>
 
 <p align="center">
-  Open your Markdown files in a real editor, straight from the terminal.
+  Review your coding agent&rsquo;s plans in a real editor.
 </p>
 
 <p align="center">

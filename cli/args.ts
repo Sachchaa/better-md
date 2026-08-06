@@ -21,12 +21,12 @@ export class InfoRequest extends Error {}
  * shims each describe themselves rather than advertising the other.
  */
 export function usage(name: string = programName()): string {
-  return `${name} — open markdown files from disk in the better-md editor
+  return `${name} — review your coding agent's plans in a real editor
 
 Usage:
-  ${name} <file.md>        open a single file
-  ${name} <directory>      open every markdown file in a directory
-  ${name} --plan           open Claude Code's plans (~/.claude/plans)
+  ${name} --plan           Claude Code's plans (~/.claude/plans), newest first
+  ${name} <file.md>        a single file
+  ${name} <directory>      every markdown file in a directory
   ${name} update           replace this binary with the latest release
   ${name} uninstall        remove better-md and its btr-md alias
 

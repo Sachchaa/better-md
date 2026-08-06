@@ -23,10 +23,14 @@ const PAGE = 'http://127.0.0.1:4173/'
  */
 const PLAYGROUND = 'https://playground.better-md.dev'
 
-test('explains what better-md is', async ({ page }) => {
+test('leads with the agent use case, not a generic editor pitch', async ({ page }) => {
   await page.goto(PAGE)
 
-  await expect(page.locator('h1')).toHaveText(/Markdown files/)
+  // Asserts the positioning rather than the exact words: the headline is what
+  // differentiates this from any other Markdown editor, and the previous generic
+  // one buried that. Matching /agent/ survives rewording but catches a revert to
+  // "Your Markdown files, in a real editor".
+  await expect(page.locator('h1')).toHaveText(/agent/i)
   await expect(page.locator('#how')).toContainText('local server')
 })
 

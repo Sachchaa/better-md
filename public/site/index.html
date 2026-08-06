@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>better-md — open your Markdown files in a real editor, from the terminal</title>
+    <title>better-md — review your coding agent's plans in a real editor</title>
     <meta
       name="description"
-      content="A two-way Markdown editor with a live editable preview, plus a CLI that opens real files from your disk in it. One command, no Node.js required, nothing leaves your machine."
+      content="Open real Markdown files from your terminal, watch them update live, and save edits directly back to disk. One command, no Node.js required, nothing leaves your machine."
     />
     <!-- www, not the apex: better-md.dev 308-redirects to www, so www is the URL
          that actually serves this page. -->
@@ -17,7 +17,7 @@
     <meta property="og:title" content="better-md" />
     <meta
       property="og:description"
-      content="Open your Markdown files in a real editor, straight from the terminal."
+      content="Open real Markdown files from your terminal, watch them update live, and save edits directly back to disk."
     />
     <meta name="twitter:card" content="summary" />
 
@@ -421,11 +421,10 @@
 
     <main class="wrap">
       <div class="hero">
-        <h1>Your Markdown files, in a real editor.</h1>
+        <h1>Review your coding agent&rsquo;s plans in a real editor.</h1>
         <p class="lede">
-          A two-way Markdown editor with a live, editable preview — plus a one-command bridge that
-          opens actual files from your disk in it. Built for reading the plans and specs your coding
-          agent leaves behind.
+          Open real Markdown files from your terminal, watch them update live, and save edits
+          directly back to disk.
         </p>
 
         <div class="install">
@@ -469,10 +468,11 @@
       <section>
         <h2>What it is</h2>
         <p>
-          better-md is two things that fit together. The first is a Markdown editor: edit the source
-          on the left or the rendered preview on the right, and both stay in sync. Tables, task
-          lists, nested lists, code blocks and quotes all render. Three layouts, light and dark
-          themes, synced scrolling, export to Markdown or PDF.
+          Coding agents write a lot of Markdown — plans, specs, notes — and reading those in a
+          terminal pager or a raw text buffer wastes what they are.
+          <code>better-md --plan</code> opens the newest plan your agent wrote, properly rendered,
+          and keeps updating it while the agent is still writing. Tables, task lists, nested lists,
+          code blocks and quotes all render, and you can edit either pane.
         </p>
         <p>
           The second is <code>better-md</code>, a command that opens real files from your machine in

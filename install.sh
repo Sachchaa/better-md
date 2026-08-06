@@ -110,7 +110,7 @@ say "better-md: installed to $INSTALL_DIR/better-md (and btr-md)"
 # guess that --help exists or go back to the README to find it.
 
 say ""
-say "  Open Markdown files from your disk in a real editor."
+say "  Review your coding agent's plans in a real editor."
 say ""
 say "    better-md --plan      your newest Claude Code plan"
 say "    better-md notes.md    a single file"
