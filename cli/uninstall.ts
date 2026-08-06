@@ -21,6 +21,11 @@ export class UninstallError extends Error {}
 export interface UninstallOptions {
   /** Absolute path of the running executable, or null when not a packaged build. */
   executable: string | null
+  /**
+   * State directory to remove alongside the binaries — the session records that
+   * `--detach` writes. Omit to leave it alone.
+   */
+  stateDir?: string | null
   log: (message: string) => void
 }
 
@@ -60,6 +65,17 @@ export async function uninstall(options: UninstallOptions): Promise<string[]> {
       targets.unshift(candidate)
     } else {
       log(`left ${candidate} alone — it is not a copy of this binary`)
+    }
+  }
+
+  // Detached runs record where they are listening; those records are the only
+  // thing better-md keeps outside a workspace, so uninstall has to take them too
+  // or the "nothing else on disk" claim stops being true.
+  if (options.stateDir !== undefined && options.stateDir !== null) {
+    try {
+      await fs.rm(options.stateDir, { recursive: true, force: true })
+    } catch {
+      log(`could not remove ${options.stateDir}; delete it by hand`)
     }
   }
 

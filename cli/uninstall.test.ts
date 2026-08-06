@@ -70,6 +70,19 @@ describe('uninstall', () => {
     expect(logs.join('\n')).toContain('btr-md')
   })
 
+  it('removes the state directory that --detach writes', async () => {
+    const dir = await installDir()
+    const state = path.join(dir, 'state')
+    await fs.mkdir(path.join(state, 'sessions'), { recursive: true })
+    await fs.writeFile(path.join(state, 'sessions', 'a.json'), '{}', 'utf8')
+
+    await uninstall({ executable: path.join(dir, 'better-md'), stateDir: state, log: () => {} })
+
+    // Session records are the only thing better-md keeps outside a workspace, so
+    // leaving them would make the "nothing else on disk" promise false.
+    await expect(fs.access(state)).rejects.toThrow()
+  })
+
   it('refuses to uninstall a checkout rather than deleting node', async () => {
     await expect(uninstall({ executable: null, log: () => {} })).rejects.toThrow(
       /not an installed build/

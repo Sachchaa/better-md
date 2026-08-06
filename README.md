@@ -93,10 +93,11 @@ By hand, if you prefer:
 rm ~/.local/bin/better-md ~/.local/bin/btr-md
 ```
 
-There is genuinely nothing else. better-md writes no config, cache or state
-directory, and the editor stores nothing in the browser — the only files it ever
-writes are the documents you save and, during `update`, a staging file it renames
-over itself.
+`uninstall` also removes `~/.better-md`, which holds the session records
+`--detach` writes so a second one can find the first. Those records are the only
+thing better-md ever keeps outside a workspace, and only detached runs create
+them — an ordinary `better-md notes.md` still leaves nothing behind. The editor
+stores nothing in the browser at all.
 
 ### Updating
 
@@ -132,10 +133,36 @@ better-md --version       # what you have
 better-md --check-updates # whether a newer release exists
 better-md update          # replace this binary with the latest release
 better-md uninstall       # remove better-md and its btr-md alias
+better-md init claude     # add a hook that opens each finished plan
+better-md --detach ./docs # serve in the background and return
 ```
 
 To open a file or directory literally named `update` or `uninstall`, prefix it with
 `./`.
+
+### Let the agent open it for you
+
+```sh
+better-md init claude       # preview the hook
+better-md init claude --write
+```
+
+This adds a Claude Code hook that opens each finished plan the moment it is written, so
+reviewing one is not another command to remember. Run `/hooks` once afterwards (or restart)
+so Claude Code picks it up.
+
+The hook runs `better-md --plan --detach`, which is `async` on purpose: `--plan` holds a
+server open until you stop it, so a blocking hook would hang the very turn that produced
+the plan. `--detach` returns immediately — measured at 0.3s — and reuses a server that is
+already serving those plans rather than starting another. Firing it three times leaves one
+process, not three.
+
+Existing settings are preserved. `init` reads, merges and writes; it refuses outright if
+`settings.json` is not valid JSON, because a malformed one disables every setting in it and
+silently rewriting yours would cost more than the hook is worth. Running it twice is a
+no-op.
+
+`--detach` also works on its own, for any workspace.
 
 ### Which agent's plans
 

@@ -29,9 +29,12 @@ Usage:
   ${name} <directory>      every markdown file in a directory
   ${name} update           replace this binary with the latest release
   ${name} uninstall        remove better-md and its btr-md alias
+  ${name} init claude      add a Claude Code hook that opens each finished plan
 
 Options:
   --agent <id>      which agent's plans --plan opens (claude, cursor)
+  --detach          start in the background, print the URL and return
+  --write           let init modify the agent's config (default: preview only)
   --port <n>        listen on a specific port (default: 8080, or a free port if taken)
   --no-open         print the URL instead of opening a browser
   --check-updates   ask GitHub whether a newer release exists
@@ -68,6 +71,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
     version?: boolean
     'check-updates'?: boolean
     agent?: string
+    detach?: boolean
+    write?: boolean
   }
   let positionals: string[]
   try {
@@ -81,6 +86,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
         version: { type: 'boolean', default: false },
         'check-updates': { type: 'boolean', default: false },
         agent: { type: 'string' },
+        detach: { type: 'boolean', default: false },
+        write: { type: 'boolean', default: false },
       },
       allowPositionals: true,
     })
@@ -93,7 +100,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
   if (values.help) throw new InfoRequest(usage())
   if (values.version === true) throw new InfoRequest(`${programName()} ${VERSION}`)
 
-  if (positionals.length > 1) {
+  // `init <agent>` is the only form taking two positionals.
+  if (positionals[0] !== 'init' && positionals.length > 1) {
     throw new UsageError(`expected at most one file or directory, got ${positionals.length}`)
   }
   const target = positionals[0] ?? null
@@ -110,12 +118,34 @@ export function parseCliArgs(argv: string[]): CliOptions {
       ? 'update'
       : target === 'uninstall' || target === 'remove'
         ? 'uninstall'
-        : null
+        : target === 'init'
+          ? 'init'
+          : null
   const checkUpdates = values['check-updates'] === true
 
   // `update` and `--check-updates` do not open anything, so they take no target
   // and no --plan. Rejecting the combination beats silently ignoring half of what
   // was typed.
+  if (command === 'init') {
+    const which = positionals[1] ?? null
+    if (which === null) throw new UsageError('init needs an agent, e.g. init claude')
+    if (which !== 'claude') {
+      throw new UsageError(`init does not know how to configure "${which}". Supported: claude.`)
+    }
+    return {
+      target: null,
+      plan: false,
+      port: null,
+      open: false,
+      agent: null,
+      detach: false,
+      command,
+      initTarget: which,
+      write: values.write === true,
+      checkUpdates: false,
+    }
+  }
+
   if (command !== null || checkUpdates) {
     const action = command ?? '--check-updates'
     if (values.plan === true) throw new UsageError(`${action} cannot be combined with --plan`)
@@ -128,7 +158,10 @@ export function parseCliArgs(argv: string[]): CliOptions {
       port: null,
       open: false,
       agent: null,
+      detach: false,
       command,
+      initTarget: null,
+      write: false,
       checkUpdates,
     }
   }
@@ -155,7 +188,10 @@ export function parseCliArgs(argv: string[]): CliOptions {
     port: values.port === undefined ? null : parsePort(values.port),
     open: values['no-open'] !== true,
     agent,
+    detach: values.detach === true,
     command: null,
+    initTarget: null,
+    write: false,
     checkUpdates: false,
   }
 }

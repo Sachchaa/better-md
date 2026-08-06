@@ -15,8 +15,14 @@ export interface CliOptions {
   open: boolean
   /** Which agent's plans --plan should open; null means whichever wrote last. */
   agent: string | null
+  /** Start the server, print the URL and return, instead of holding the terminal. */
+  detach: boolean
   /** A subcommand that replaces the normal "open a workspace" run. */
-  command: 'update' | 'uninstall' | null
+  command: 'update' | 'uninstall' | 'init' | null
+  /** Which agent `init` should configure. */
+  initTarget: string | null
+  /** `init` writes to the agent's config only when asked. */
+  write: boolean
   /** --check-updates: report whether a newer release exists, then exit. */
   checkUpdates: boolean
 }

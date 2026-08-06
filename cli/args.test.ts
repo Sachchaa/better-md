@@ -9,7 +9,10 @@ describe('parseCliArgs', () => {
       port: null,
       open: true,
       agent: null,
+      detach: false,
       command: null,
+      initTarget: null,
+      write: false,
       checkUpdates: false,
     })
   })
@@ -21,7 +24,10 @@ describe('parseCliArgs', () => {
       port: null,
       open: true,
       agent: null,
+      detach: false,
       command: null,
+      initTarget: null,
+      write: false,
       checkUpdates: false,
     })
   })

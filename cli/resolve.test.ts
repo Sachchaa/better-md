@@ -20,7 +20,10 @@ function opts(over: Partial<CliOptions>): CliOptions {
     port: 0,
     open: false,
     agent: null,
+    detach: false,
     command: null,
+    initTarget: null,
+    write: false,
     checkUpdates: false,
     ...over,
   }

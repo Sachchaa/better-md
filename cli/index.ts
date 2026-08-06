@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process'
+import os from 'node:os'
+import path from 'node:path'
 import sea from 'node:sea'
 import { InfoRequest, parseCliArgs, UsageError } from './args.js'
 import { ASSETS } from './assets.generated.js'
@@ -7,6 +10,15 @@ import { programName } from './programName.js'
 import { ResolveError, resolveWorkspace } from './resolve.js'
 import { startServer } from './server.js'
 import { checkForUpdate, describeCheck, selfUpdate, UpdateError } from './update.js'
+import { initClaude, InitError } from './initAgent.js'
+import {
+  readSession,
+  removeSession,
+  removeSessionSync,
+  sessionFile,
+  sessionIsLive,
+  writeSession,
+} from './session.js'
 import { uninstall, UninstallError } from './uninstall.js'
 import { VERSION } from './version.generated.js'
 import { watchWorkspace } from './watch.js'
@@ -32,9 +44,34 @@ async function main(): Promise<void> {
     return
   }
 
+  if (options.command === 'init') {
+    const result = await initClaude({
+      home: os.homedir(),
+      program: programName(),
+      write: options.write,
+    })
+    if (!result.changed) {
+      process.stdout.write(`${result.file} already has the hook — nothing to do.\n`)
+      return
+    }
+    if (result.written) {
+      process.stdout.write(
+        `Added to ${result.file}:\n\n${result.block}\n\n` +
+          'Claude Code will open each finished plan automatically.\n' +
+          'Open /hooks once (or restart) so it picks up the change.\n'
+      )
+      return
+    }
+    process.stdout.write(
+      `Would add to ${result.file}:\n\n${result.block}\n\n` + `Re-run with --write to apply it.\n`
+    )
+    return
+  }
+
   if (options.command === 'uninstall') {
     const removed = await uninstall({
       executable: packagedExecutable(),
+      stateDir: path.join(os.homedir(), '.better-md'),
       log: (message) => process.stdout.write(`${message}\n`),
     })
     for (const file of removed) process.stdout.write(`removed ${file}\n`)
@@ -57,6 +94,13 @@ async function main(): Promise<void> {
   const descriptor = await resolveWorkspace(options)
   const workspace = new Workspace(descriptor)
 
+  const session = sessionFile(os.homedir(), descriptor.root)
+
+  if (options.detach) {
+    await runDetached(session, options.open)
+    return
+  }
+
   // The bundle is embedded at build time, so this can only fail if the embed step
   // was skipped — not if a directory went missing at runtime.
   if (!ASSETS.has('index.html')) {
@@ -74,6 +118,19 @@ async function main(): Promise<void> {
       )
     }
     throw err
+  }
+
+  // Only a detached run records itself. An ordinary foreground run still writes
+  // nothing outside the workspace.
+  const recording = process.env.BETTER_MD_SESSION
+  if (recording !== undefined && recording !== '') {
+    await writeSession(recording, {
+      url: server.url,
+      port: server.port,
+      token: server.token,
+      root: workspace.root,
+      pid: process.pid,
+    })
   }
 
   const stopWatching = watchWorkspace(workspace.root, (event) => server.notify(event))
@@ -98,10 +155,55 @@ async function main(): Promise<void> {
           `${programName()}: shutdown error: ${err instanceof Error ? err.message : String(err)}\n`
         )
       })
-      .finally(() => process.exit(0))
+      .finally(() => {
+        const file = process.env.BETTER_MD_SESSION
+        if (file !== undefined && file !== '') removeSessionSync(file)
+        process.exit(0)
+      })
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
+}
+
+/**
+ * Reuse a live server for this workspace, or start one in the background.
+ *
+ * Reuse matters because the intended caller is a hook that fires on every
+ * finished plan: without it, each plan would leave another ~110 MB server
+ * running. Liveness is proven by an authenticated request rather than a pid
+ * check — ports and pids both get recycled.
+ */
+async function runDetached(session: string, open: boolean): Promise<void> {
+  const existing = await readSession(session)
+  if (existing !== null && (await sessionIsLive(existing))) {
+    process.stdout.write(`${existing.url}\n`)
+    if (open) openBrowser(existing.url)
+    return
+  }
+  await removeSession(session)
+
+  // Re-spawn self without --detach. stdio is ignored and the child unref'd, so
+  // this process can exit without killing it or leaving it writing to a dead
+  // pipe; the session file is the handshake instead.
+  const args = process.argv.slice(2).filter((a) => a !== '--detach')
+  const child = spawn(process.execPath, sea.isSea() ? args : [process.argv[1], ...args], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, BETTER_MD_SESSION: session },
+  })
+  child.unref()
+
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    const record = await readSession(session)
+    if (record !== null && (await sessionIsLive(record))) {
+      process.stdout.write(`${record.url}\n`)
+      if (open) openBrowser(record.url)
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+  throw new ResolveError('the background server did not start within 15s')
 }
 
 main().catch((err: unknown) => {
@@ -110,7 +212,7 @@ main().catch((err: unknown) => {
     process.stdout.write(`${err.message}\n`)
     process.exit(0)
   }
-  if (err instanceof UpdateError || err instanceof UninstallError) {
+  if (err instanceof UpdateError || err instanceof UninstallError || err instanceof InitError) {
     process.stderr.write(`${programName()}: ${err.message}\n`)
     process.exit(1)
   }
