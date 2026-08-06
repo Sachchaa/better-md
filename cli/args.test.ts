@@ -28,8 +28,10 @@ describe('parseCliArgs', () => {
     expect(() => parseCliArgs(['--plan', 'notes.md'])).toThrow(UsageError)
   })
 
-  it('rejects no target at all', () => {
-    expect(() => parseCliArgs([])).toThrow(UsageError)
+  // Superseded: a bare invocation used to be an error, and now shows help. The
+  // two cases below the command list cover both halves of the replacement rule.
+  it('rejects a target-less run that was clearly meant to open something', () => {
+    expect(() => parseCliArgs(['--no-open'])).toThrow(UsageError)
   })
 
   it('rejects more than one positional', () => {
@@ -108,6 +110,26 @@ describe('parseCliArgs', () => {
     expect(() => parseCliArgs(['--check-updates', 'a.md'])).toThrow(UsageError)
     expect(() => parseCliArgs(['--check-updates', '--plan'])).toThrow(UsageError)
     expect(() => parseCliArgs(['update', '--plan'])).toThrow(UsageError)
+  })
+
+  // Typing the bare command is the most likely first thing a new user does. It
+  // used to be a dead end — "missing a file or directory argument", exit 1 — so
+  // it now orients instead.
+  it('shows help for a completely bare invocation', () => {
+    expect(() => parseCliArgs([])).toThrow(InfoRequest)
+    try {
+      parseCliArgs([])
+    } catch (err) {
+      expect((err as Error).message).toContain('Usage:')
+    }
+  })
+
+  // But flags with no target are a mistake, not a request for help: someone who
+  // typed --no-open meant to open something. Turning that into help would hide
+  // the error.
+  it('still errors when flags are given without a target', () => {
+    expect(() => parseCliArgs(['--no-open'])).toThrow(UsageError)
+    expect(() => parseCliArgs(['--port', '3000'])).toThrow(UsageError)
   })
 
   it('leaves ordinary runs with no command', () => {

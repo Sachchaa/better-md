@@ -16,7 +16,9 @@ async function startCli(): Promise<string> {
   workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'bmd-e2e-'))
   await fs.writeFile(path.join(workdir, 'hello.md'), '# hello\n', 'utf8')
 
-  cli = spawn('node', ['dist-cli/index.js', '--no-open', workdir], {
+  // --port 0 so the suite never contends for the default 8080 with a real
+  // better-md the developer happens to be running.
+  cli = spawn('node', ['dist-cli/index.js', '--no-open', '--port', '0', workdir], {
     cwd: process.cwd(),
     stdio: ['ignore', 'pipe', 'pipe'],
   })

@@ -114,8 +114,13 @@ jobs:
         run: |
           # Exercises the real installer, so a broken checksum or a missing
           # asset fails here rather than on a user's machine.
-          curl -fsSL https://better-md.dev/install.sh | sh
+          curl -fsSL https://better-md.dev/install.sh | sh | tee install-output.txt
           "${{ runner.temp }}/bin/better-md" --help
+
+          # The post-install message is the only place a new user is told that
+          # --help exists, so losing it is a real regression and a silent one.
+          grep -q -- '--help' install-output.txt
+          grep -q 'better-md --plan' install-output.txt
 
       - name: Smoke-test the installed binary
         run: node scripts/smoke-binary.mjs "${{ runner.temp }}/bin/better-md"

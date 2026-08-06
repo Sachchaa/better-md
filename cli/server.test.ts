@@ -67,6 +67,12 @@ async function harness({ injectAssets = true } = {}): Promise<Harness> {
   const logs: string[] = []
   const handle = await startServer({
     workspace,
+    // Explicit 0, not the default policy. Otherwise every test here competes for
+    // 8080 and, whenever it is taken, the fallback logs a line that assertions
+    // about `logs` then trip over — a failure caused by what else is running on
+    // the machine rather than by the code. Port selection is tested on its own
+    // below, with an injected preferredPort.
+    port: 0,
     log: (message) => logs.push(message),
     ...(injectAssets ? { assets: FIXTURE_ASSETS } : {}),
   })

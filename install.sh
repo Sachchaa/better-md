@@ -102,19 +102,30 @@ install -m 755 "$tmp/$asset" "$INSTALL_DIR/btr-md" || true
 
 say "better-md: installed to $INSTALL_DIR/better-md (and btr-md)"
 
-# --- tell the user what to do next -------------------------------------------
+# --- welcome ------------------------------------------------------------------
+#
+# The old ending was a single "Try it: better-md --plan", which shows one example
+# without showing the way in. This says what the tool is, gives the handful of
+# commands worth knowing, and points at --help for the rest — so nobody has to
+# guess that --help exists or go back to the README to find it.
+
+say ""
+say "  Open Markdown files from your disk in a real editor."
+say ""
+say "    better-md --plan      your newest Claude Code plan"
+say "    better-md notes.md    a single file"
+say "    better-md ./docs      every Markdown file in a directory"
+say ""
+say "    better-md --help      all commands and options"
+say "    better-md update      upgrade to the latest release"
+say ""
 
 case ":$PATH:" in
-  *":$INSTALL_DIR:"*)
-    say ""
-    say "Try it:  better-md --plan"
-    ;;
+  *":$INSTALL_DIR:"*) ;;
   *)
+    say "  $INSTALL_DIR is not on your PATH yet. Add it:"
     say ""
-    say "$INSTALL_DIR is not on your PATH. Add it:"
+    say "    echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc   # or ~/.bashrc"
     say ""
-    say "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc   # or ~/.bashrc"
-    say ""
-    say "Then:  better-md --plan"
     ;;
 esac

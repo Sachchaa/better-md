@@ -51,6 +51,12 @@ function parsePort(raw: string): number {
 }
 
 export function parseCliArgs(argv: string[]): CliOptions {
+  // A bare invocation is almost always someone finding their way in, so answer
+  // with the help rather than an error. Deliberately only the *empty* case:
+  // flags without a target (`--no-open`) are a mistake, and replacing that
+  // message with help would hide it.
+  if (argv.length === 0) throw new InfoRequest(usage())
+
   let values: {
     plan?: boolean
     port?: string
