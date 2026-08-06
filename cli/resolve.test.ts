@@ -14,7 +14,15 @@ async function tmpDir(): Promise<string> {
 }
 
 function opts(over: Partial<CliOptions>): CliOptions {
-  return { target: null, plan: false, port: 0, open: false, ...over }
+  return {
+    target: null,
+    plan: false,
+    port: 0,
+    open: false,
+    command: null,
+    checkUpdates: false,
+    ...over,
+  }
 }
 
 /** Write a file with an explicit mtime so "newest" ordering is deterministic. */

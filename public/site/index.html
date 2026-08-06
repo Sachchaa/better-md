@@ -585,9 +585,24 @@ $ better-md --plan
                 <td><code>better-md --no-open</code></td>
                 <td>Print the URL without launching a browser</td>
               </tr>
+              <tr>
+                <td><code>better-md --version</code></td>
+                <td>What you have installed</td>
+              </tr>
+              <tr>
+                <td><code>better-md update</code></td>
+                <td>
+                  Verify and replace this binary with the latest release —
+                  <code>--check-updates</code> just asks
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
+        <p class="beneath">
+          Nothing checks for updates on its own — better-md makes no network request unless you ask
+          it to with <code>update</code> or <code>--check-updates</code>.
+        </p>
         <p class="beneath">
           It serves on <code>8080</code> by default, so the URL stays the same between runs. If that
           port is busy it says so and takes a free one instead — a taken port never stops it from

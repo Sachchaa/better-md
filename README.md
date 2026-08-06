@@ -68,6 +68,27 @@ opens in a browser, and the
 [copy on GitHub](https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh) is
 identical. To uninstall, delete the two files it reports — there is nothing else on disk.
 
+### Updating
+
+```sh
+better-md update            # verify and replace this binary in place
+better-md --check-updates   # just ask, change nothing
+```
+
+`update` downloads the latest release, checks it against the published
+`SHA256SUMS`, and only then swaps the binary — the same refusal-on-mismatch the
+installer applies. The swap is a rename within the install directory, so an
+interrupted update leaves the old working binary rather than half a new one.
+
+Re-running the installer works too, and is the route if `update` cannot write to
+the install directory. One catch there: if you originally installed with
+`BETTER_MD_INSTALL=/usr/local/bin`, set it again — otherwise the new binary lands
+in `~/.local/bin` while the old one stays where it was, and whichever comes first
+on your `PATH` wins.
+
+**Nothing checks for updates on its own.** better-md makes no network request
+unless you ask it to with one of the two commands above.
+
 ## Usage
 
 ```sh
@@ -76,7 +97,12 @@ better-md notes.md        # a single file
 better-md ./docs          # every Markdown file in a directory
 better-md --port 4321     # pin a port (fails if busy, rather than moving)
 better-md --no-open       # print the URL without launching a browser
+better-md --version       # what you have
+better-md --check-updates # whether a newer release exists
+better-md update          # replace this binary with the latest release
 ```
+
+To open a file or directory literally named `update`, write `./update`.
 
 `btr-md` is the same binary under a shorter name, and each name reports itself in `--help`
 and in error messages.

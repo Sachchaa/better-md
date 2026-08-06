@@ -86,6 +86,38 @@ try {
   })
   check('--help names the program', helpText.includes('better-md'), helpText.split('\n')[0])
 
+  /** Run the binary to completion, capturing the streams separately. */
+  function capture(args) {
+    const c = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    return new Promise((resolve) => {
+      let out = '',
+        err = ''
+      c.stdout.on('data', (d) => (out += d))
+      c.stderr.on('data', (d) => (err += d))
+      c.on('exit', (code) => resolve({ out, err, code }))
+    })
+  }
+
+  // Deliberately offline. --check-updates and update reach GitHub, which
+  // rate-limits unauthenticated CI addresses; asserting on them here would make
+  // this suite fail for reasons that have nothing to do with the binary. Their
+  // logic is covered by cli/update.test.ts with an injected fetch.
+  const version = await capture(['--version'])
+  check(
+    '--version prints "<name> <semver>" on stdout, exit 0',
+    version.code === 0 && /^better-md \d+\.\d+\.\d+/.test(version.out.trim()) && version.err === '',
+    version.out.trim() || `exit ${version.code}`
+  )
+
+  // Regression: --help used to go to stderr and exit 1, so it could not be piped
+  // and broke `better-md --help && …`.
+  const helpRun = await capture(['--help'])
+  check(
+    '--help goes to stdout and exits 0',
+    helpRun.code === 0 && helpRun.out.includes('Usage:') && helpRun.err === '',
+    `exit ${helpRun.code}`
+  )
+
   // --- it serves the embedded editor with no dist/ anywhere ----------------
   server = await start(['--no-open', ws])
   const origin = new URL(server.url).origin

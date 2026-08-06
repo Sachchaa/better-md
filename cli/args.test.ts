@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseCliArgs, UsageError } from './args.js'
+import { InfoRequest, parseCliArgs, UsageError } from './args.js'
 
 describe('parseCliArgs', () => {
   it('accepts a single file target', () => {
@@ -8,6 +8,8 @@ describe('parseCliArgs', () => {
       plan: false,
       port: null,
       open: true,
+      command: null,
+      checkUpdates: false,
     })
   })
 
@@ -17,6 +19,8 @@ describe('parseCliArgs', () => {
       plan: true,
       port: null,
       open: true,
+      command: null,
+      checkUpdates: false,
     })
   })
 
@@ -57,7 +61,57 @@ describe('parseCliArgs', () => {
     expect(parseCliArgs(['--no-open', 'a.md']).open).toBe(false)
   })
 
-  it('reports --help via UsageError carrying the usage text', () => {
-    expect(() => parseCliArgs(['--help'])).toThrow(UsageError)
+  // InfoRequest, not UsageError: --help is a request for output, so index.ts
+  // prints it to stdout and exits 0. It used to be a UsageError, which meant
+  // stderr and exit 1 — `better-md --help | less` showed nothing.
+  it('reports --help via InfoRequest carrying the usage text', () => {
+    expect(() => parseCliArgs(['--help'])).toThrow(InfoRequest)
+    try {
+      parseCliArgs(['--help'])
+    } catch (err) {
+      expect((err as Error).message).toContain('Usage:')
+      expect((err as Error).message).toContain('--version')
+    }
+  })
+
+  it('reports --version via InfoRequest naming the program and a version', () => {
+    try {
+      parseCliArgs(['--version'])
+      expect.unreachable('should have thrown')
+    } catch (err) {
+      expect(err).toBeInstanceOf(InfoRequest)
+      expect((err as Error).message).toMatch(/^better-md \d+\.\d+\.\d+/)
+    }
+  })
+
+  it('takes update as a subcommand, not a path', () => {
+    const opts = parseCliArgs(['update'])
+    expect(opts.command).toBe('update')
+    expect(opts.target).toBeNull()
+  })
+
+  // The escape hatch for the ambiguity: a real path named `update` is reachable
+  // by writing it as a path.
+  it('treats ./update as a path, not the subcommand', () => {
+    const opts = parseCliArgs(['./update'])
+    expect(opts.command).toBeNull()
+    expect(opts.target).toBe('./update')
+  })
+
+  it('parses --check-updates with no target', () => {
+    const opts = parseCliArgs(['--check-updates'])
+    expect(opts.checkUpdates).toBe(true)
+    expect(opts.command).toBeNull()
+  })
+
+  it('rejects combinations that would silently ignore half the input', () => {
+    expect(() => parseCliArgs(['--check-updates', 'a.md'])).toThrow(UsageError)
+    expect(() => parseCliArgs(['--check-updates', '--plan'])).toThrow(UsageError)
+    expect(() => parseCliArgs(['update', '--plan'])).toThrow(UsageError)
+  })
+
+  it('leaves ordinary runs with no command', () => {
+    expect(parseCliArgs(['a.md']).command).toBeNull()
+    expect(parseCliArgs(['a.md']).checkUpdates).toBe(false)
   })
 })

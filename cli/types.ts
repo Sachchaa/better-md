@@ -13,6 +13,10 @@ export interface CliOptions {
    */
   port: number | null
   open: boolean
+  /** A subcommand that replaces the normal "open a workspace" run. */
+  command: 'update' | null
+  /** --check-updates: report whether a newer release exists, then exit. */
+  checkUpdates: boolean
 }
 
 /** One document in the workspace. `relPath` is always a bare filename. */

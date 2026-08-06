@@ -1,15 +1,48 @@
 #!/usr/bin/env node
-import { parseCliArgs, UsageError } from './args.js'
+import sea from 'node:sea'
+import { InfoRequest, parseCliArgs, UsageError } from './args.js'
 import { ASSETS } from './assets.generated.js'
 import { openBrowser } from './open.js'
 import { programName } from './programName.js'
 import { ResolveError, resolveWorkspace } from './resolve.js'
 import { startServer } from './server.js'
+import { checkForUpdate, describeCheck, selfUpdate, UpdateError } from './update.js'
+import { VERSION } from './version.generated.js'
 import { watchWorkspace } from './watch.js'
 import { Workspace } from './workspace.js'
 
+/**
+ * The running executable, or null when this is not a packaged build.
+ *
+ * `sea.isSea()` is the authoritative answer — a renamed binary still reports true,
+ * and `node dist-cli/index.js` still reports false, which a basename check of
+ * process.execPath gets wrong in both directions.
+ */
+function packagedExecutable(): string | null {
+  return sea.isSea() ? process.execPath : null
+}
+
 async function main(): Promise<void> {
   const options = parseCliArgs(process.argv.slice(2))
+
+  if (options.checkUpdates) {
+    const check = await checkForUpdate(VERSION)
+    process.stdout.write(`${describeCheck(check, programName())}\n`)
+    return
+  }
+
+  if (options.command === 'update') {
+    const result = await selfUpdate({
+      currentVersion: VERSION,
+      executable: packagedExecutable(),
+      platform: process.platform,
+      arch: process.arch,
+      log: (message) => process.stdout.write(`${message}\n`),
+    })
+    process.stdout.write(`${result}\n`)
+    return
+  }
+
   const descriptor = await resolveWorkspace(options)
   const workspace = new Workspace(descriptor)
 
@@ -61,6 +94,15 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  // Asked-for output goes to stdout and exits 0, so it can be piped and scripted.
+  if (err instanceof InfoRequest) {
+    process.stdout.write(`${err.message}\n`)
+    process.exit(0)
+  }
+  if (err instanceof UpdateError) {
+    process.stderr.write(`${programName()}: ${err.message}\n`)
+    process.exit(1)
+  }
   if (err instanceof UsageError || err instanceof ResolveError) {
     process.stderr.write(`${err.message}\n`)
     process.exit(1)

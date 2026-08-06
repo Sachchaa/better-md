@@ -24,7 +24,7 @@
     "test:e2e": "playwright test",
     "preview": "vite preview",
     "prepublishOnly": "pnpm build && pnpm build:cli",
-    "embed": "node scripts/embed-assets.mjs",
+    "embed": "node scripts/embed-assets.mjs && node scripts/embed-version.mjs",
     "binaries": "node scripts/build-binaries.mjs",
     "sync:installer": "node -e \"const f=require('fs');f.mkdirSync('public',{recursive:true});f.copyFileSync('install.sh','public/install.sh')\"",
     "preview:routed": "node scripts/preview-routed.mjs"
