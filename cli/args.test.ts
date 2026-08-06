@@ -8,6 +8,7 @@ describe('parseCliArgs', () => {
       plan: false,
       port: null,
       open: true,
+      agent: null,
       command: null,
       checkUpdates: false,
     })
@@ -19,6 +20,7 @@ describe('parseCliArgs', () => {
       plan: true,
       port: null,
       open: true,
+      agent: null,
       command: null,
       checkUpdates: false,
     })

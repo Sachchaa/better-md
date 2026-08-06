@@ -24,13 +24,14 @@ export function usage(name: string = programName()): string {
   return `${name} — review your coding agent's plans in a real editor
 
 Usage:
-  ${name} --plan           Claude Code's plans (~/.claude/plans), newest first
+  ${name} --plan           your agent's plans, whichever wrote most recently
   ${name} <file.md>        a single file
   ${name} <directory>      every markdown file in a directory
   ${name} update           replace this binary with the latest release
   ${name} uninstall        remove better-md and its btr-md alias
 
 Options:
+  --agent <id>      which agent's plans --plan opens (claude, cursor)
   --port <n>        listen on a specific port (default: 8080, or a free port if taken)
   --no-open         print the URL instead of opening a browser
   --check-updates   ask GitHub whether a newer release exists
@@ -66,6 +67,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     help?: boolean
     version?: boolean
     'check-updates'?: boolean
+    agent?: string
   }
   let positionals: string[]
   try {
@@ -78,6 +80,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
         help: { type: 'boolean', default: false },
         version: { type: 'boolean', default: false },
         'check-updates': { type: 'boolean', default: false },
+        agent: { type: 'string' },
       },
       allowPositionals: true,
     })
@@ -119,7 +122,22 @@ export function parseCliArgs(argv: string[]): CliOptions {
     if (checkUpdates && target !== null) {
       throw new UsageError(`--check-updates cannot be combined with a file or directory argument`)
     }
-    return { target: null, plan: false, port: null, open: false, command, checkUpdates }
+    return {
+      target: null,
+      plan: false,
+      port: null,
+      open: false,
+      agent: null,
+      command,
+      checkUpdates,
+    }
+  }
+
+  const agent = values.agent ?? null
+  // --agent only means anything alongside --plan; silently ignoring it would hide
+  // a mistyped invocation that then opens the wrong thing.
+  if (agent !== null && values.plan !== true) {
+    throw new UsageError('--agent only applies to --plan')
   }
 
   if (values.plan && target !== null) {
@@ -136,6 +154,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     // explicit --port 0 is a request for an ephemeral port and is honoured as one.
     port: values.port === undefined ? null : parsePort(values.port),
     open: values['no-open'] !== true,
+    agent,
     command: null,
     checkUpdates: false,
   }

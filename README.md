@@ -122,7 +122,8 @@ unless you ask it to with one of the two commands above.
 ## Usage
 
 ```sh
-better-md --plan          # Claude Code's plans (~/.claude/plans), newest active
+better-md --plan          # your agent's plans, whichever wrote most recently
+better-md --plan --agent cursor   # a specific agent
 better-md notes.md        # a single file
 better-md ./docs          # every Markdown file in a directory
 better-md --port 4321     # pin a port (fails if busy, rather than moving)
@@ -135,6 +136,23 @@ better-md uninstall       # remove better-md and its btr-md alias
 
 To open a file or directory literally named `update` or `uninstall`, prefix it with
 `./`.
+
+### Which agent's plans
+
+`--plan` opens whichever supported agent wrote most recently, so it means "the plan I was
+just looking at" without naming a tool. `--agent <id>` picks one.
+
+| Agent    | Where it keeps plans |
+| -------- | -------------------- |
+| `claude` | `~/.claude/plans`    |
+| `cursor` | `~/.cursor/plans`    |
+
+Claude Code's `plansDirectory` setting is honoured when set, resolved against the project
+root as its schema specifies.
+
+One agent at a time, not all of them merged: a workspace has a single root, and the path
+confinement in `cli/workspace.ts` is built on that. Codex is absent because it keeps
+sessions in a sqlite log rather than plan files — an adapter for it could never resolve.
 
 `btr-md` is the same binary under a shorter name, and each name reports itself in `--help`
 and in error messages.

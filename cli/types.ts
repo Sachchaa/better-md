@@ -13,6 +13,8 @@ export interface CliOptions {
    */
   port: number | null
   open: boolean
+  /** Which agent's plans --plan should open; null means whichever wrote last. */
+  agent: string | null
   /** A subcommand that replaces the normal "open a workspace" run. */
   command: 'update' | 'uninstall' | null
   /** --check-updates: report whether a newer release exists, then exit. */
