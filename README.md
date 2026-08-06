@@ -62,7 +62,7 @@ Two environment variables change what it does:
 
 ```sh
 # pin a release — also how you roll back
-curl -fsSL https://better-md.dev/install.sh | BETTER_MD_VERSION=v0.4.0 sh
+curl -fsSL https://better-md.dev/install.sh | BETTER_MD_VERSION=v0.5.0 sh
 
 # install somewhere other than ~/.local/bin
 curl -fsSL https://better-md.dev/install.sh | BETTER_MD_INSTALL=/usr/local/bin sh
