@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>better-md — review your coding agent's plans in a real editor</title>
+    <title>better-md — read your coding agent's plans like documents</title>
     <meta
       name="description"
-      content="Open real Markdown files from your terminal, watch them update live, and save edits directly back to disk. One command, no Node.js required, nothing leaves your machine."
+      content="better-md opens your agent's Markdown in a local editor. Watch plans update live, edit them, and save straight back to the original file. No account, no server, nothing leaves your machine."
     />
     <!-- www, not the apex: better-md.dev 308-redirects to www, so www is the URL
          that actually serves this page. -->
@@ -17,52 +17,46 @@
     <meta property="og:title" content="better-md" />
     <meta
       property="og:description"
-      content="Open real Markdown files from your terminal, watch them update live, and save edits directly back to disk."
+      content="Your coding agent wrote a plan. Read it like a document."
     />
     <meta name="twitter:card" content="summary" />
+    <meta name="color-scheme" content="dark" />
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
 
     <!--
-      Deliberately a hand-written, dependency-free page rather than a second Vite
-      entry. Two reasons: a marketing page should not carry a build pipeline, and
-      keeping it out of the editor's bundle graph means it can never end up in the
-      110 MiB binary that embeds dist/. The theme tokens below are copied from
-      src/index.css so the site and the editor read as one product.
+      Hand-written and dependency-free on purpose: a marketing page should not
+      carry a build pipeline, and staying out of the editor's bundle graph is what
+      keeps it out of the ~110 MB binary that embeds dist/.
+
+      The page is dark only. The one light surface here is the document itself —
+      that contrast is the whole idea, and a light theme would dissolve it.
     -->
     <style>
       :root {
-        --sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
-        --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+        --bg: #0b0d0e;
+        --raised: #111416;
+        --surface: #15191b;
+        --line: #1b1f22;
+        --fg: #f5f7f8;
+        --dim: #90979d;
 
-        --bg: #f4f4f2;
-        --panel: #ffffff;
-        --panel2: #f6f6f4;
-        --fg: #1b1b19;
-        --muted: #73736c;
-        --faint: #a3a39c;
-        --border: #e7e7e2;
-        --code-bg: #f1f1ed;
-        --accent: #3b6df2;
-      }
+        /* The document surface: warm paper, quoted inside the dark tool. */
+        --paper: #f3f1ea;
+        --ink: #202223;
+        --ink-dim: #6b6a64;
+        --rule: #ddd9cc;
 
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #0d0d0f;
-          --panel: #161619;
-          --panel2: #1d1d21;
-          --fg: #e9e9e4;
-          --muted: #92928a;
-          --faint: #5e5e58;
-          --border: #28282c;
-          --code-bg: #1d1d22;
-          --accent: #5b87ff;
-        }
+        --accent: #a8e063;
+        --link: #79b8ff;
+
+        --sans: 'Instrument Sans', system-ui, -apple-system, sans-serif;
+        --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
       }
 
       *,
@@ -71,330 +65,580 @@
         box-sizing: border-box;
       }
 
+      html {
+        scroll-behavior: smooth;
+      }
+
       body {
         margin: 0;
         background: var(--bg);
         color: var(--fg);
         font-family: var(--sans);
         font-size: 16px;
-        line-height: 1.65;
+        line-height: 1.6;
         -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
       }
 
       a {
-        color: var(--accent);
+        color: inherit;
         text-decoration: none;
       }
-      a:hover {
-        text-decoration: underline;
-      }
 
-      code,
-      pre,
-      kbd {
-        font-family: var(--mono);
-      }
-
-      code {
-        background: var(--code-bg);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: 0.1em 0.36em;
-        font-size: 0.88em;
-      }
-
-      kbd {
-        background: var(--panel2);
-        border: 1px solid var(--border);
-        border-bottom-width: 2px;
-        border-radius: 4px;
-        padding: 0.1em 0.4em;
-        font-size: 0.85em;
-        white-space: nowrap;
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+        border-radius: 2px;
       }
 
       .wrap {
-        max-width: 780px;
+        max-width: 1080px;
         margin: 0 auto;
-        padding: 0 24px;
+        padding: 0 28px;
       }
 
-      /* --- header ------------------------------------------------------- */
+      /* Eyebrows are real paths and ports from the product, not decoration —
+         they say where the thing being described actually lives. */
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin: 0 0 18px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .eyebrow::before {
+        content: '';
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex: none;
+      }
+
+      /* --- nav ----------------------------------------------------------- */
 
       header {
-        border-bottom: 1px solid var(--border);
         position: sticky;
         top: 0;
-        background: color-mix(in srgb, var(--bg) 88%, transparent);
-        backdrop-filter: blur(8px);
-        z-index: 10;
+        z-index: 20;
+        background: color-mix(in srgb, var(--bg) 82%, transparent);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid var(--line);
       }
-
       .bar {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 16px;
-        height: 58px;
+        height: 60px;
+        gap: 20px;
       }
-
-      .wordmark {
+      .mark {
         font-family: var(--mono);
-        font-weight: 500;
         font-size: 15px;
-        color: var(--fg);
+        font-weight: 500;
+        letter-spacing: -0.01em;
         white-space: nowrap;
+        display: inline-flex;
+        align-items: baseline;
+        gap: 1px;
       }
-      .wordmark:hover {
-        text-decoration: none;
+      .mark .hash {
+        color: var(--accent);
       }
-      .wordmark span {
-        color: var(--faint);
+      .caret {
+        color: var(--accent);
+        animation: blink 1.15s steps(1, end) infinite;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .caret {
+          animation: none;
+        }
+        html {
+          scroll-behavior: auto;
+        }
       }
 
       nav {
         display: flex;
         align-items: center;
-        gap: 20px;
+        gap: 26px;
         font-size: 14px;
       }
       nav a {
-        color: var(--muted);
+        color: var(--dim);
+        transition: color 120ms;
       }
       nav a:hover {
         color: var(--fg);
-        text-decoration: none;
       }
-
-      /* --- buttons ------------------------------------------------------ */
-
-      .btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        border-radius: 7px;
-        border: 1px solid var(--border);
-        background: var(--panel);
+      .nav-cta {
+        font-family: var(--mono);
+        font-size: 12.5px;
         color: var(--fg);
-        padding: 9px 16px;
-        font-size: 14px;
-        font-weight: 500;
-        font-family: inherit;
-        cursor: pointer;
-        transition:
-          border-color 120ms,
-          background 120ms;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 6px;
+        padding: 7px 13px;
       }
-      .btn:hover {
-        text-decoration: none;
-        border-color: var(--faint);
+      .nav-cta:hover {
+        border-color: #2a3033;
       }
 
-      .btn-primary {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: #fff;
-      }
-      .btn-primary:hover {
-        border-color: var(--accent);
-        filter: brightness(1.07);
-      }
-
-      /* --- hero --------------------------------------------------------- */
+      /* --- hero ---------------------------------------------------------- */
 
       .hero {
-        padding: 76px 0 8px;
+        padding: 96px 0 0;
       }
-
       h1 {
-        font-size: clamp(34px, 6.4vw, 50px);
-        line-height: 1.1;
-        letter-spacing: -0.021em;
-        margin: 0 0 18px;
-        font-weight: 700;
+        font-size: clamp(31px, 5.6vw, 66px);
+        line-height: 1.04;
+        letter-spacing: -0.032em;
+        font-weight: 600;
+        margin: 0 0 22px;
+        max-width: 19ch;
       }
-
+      /* Each sentence is its own block so the two clauses never share a line, and
+         balanced so neither ends on a single orphaned word. */
+      h1 span {
+        display: block;
+        text-wrap: balance;
+      }
+      h1 .quiet {
+        color: var(--dim);
+      }
       .lede {
-        font-size: clamp(17px, 2.4vw, 20px);
-        color: var(--muted);
-        margin: 0 0 32px;
-        max-width: 60ch;
+        font-size: clamp(16.5px, 1.6vw, 19px);
+        color: var(--dim);
+        max-width: 56ch;
+        margin: 0 0 34px;
       }
 
-      .install {
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 22px;
+      }
+      .btn {
+        font-family: inherit;
+        font-size: 14.5px;
+        font-weight: 500;
+        border-radius: 7px;
+        padding: 11px 20px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          filter 120ms,
+          border-color 120ms;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #0d1207;
+      }
+      .btn-primary:hover {
+        filter: brightness(1.08);
+      }
+      .btn-ghost {
+        border-color: var(--line);
+        color: var(--fg);
+        background: transparent;
+      }
+      .btn-ghost:hover {
+        border-color: #2a3033;
+      }
+
+      .cmd {
         display: flex;
         align-items: center;
-        gap: 10px;
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 9px;
-        padding: 13px 14px;
+        gap: 12px;
+        font-family: var(--mono);
+        font-size: 13.5px;
+        background: var(--raised);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px 12px 12px 15px;
+        max-width: 560px;
+      }
+      /* The command scrolls inside its own box. Scrolling the whole row instead
+         pushed the copy button off-screen on a phone, where it is most wanted. */
+      .cmd-scroll {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+        flex: 1;
         overflow-x: auto;
       }
-      .install code {
-        background: none;
-        border: none;
-        padding: 0;
-        font-size: 14px;
-        white-space: nowrap;
-      }
-      .install .prompt {
-        color: var(--faint);
+      .cmd .sigil {
+        color: var(--accent);
         user-select: none;
+      }
+      .cmd code {
+        white-space: nowrap;
       }
       #copy {
         margin-left: auto;
         flex: none;
-        padding: 5px 11px;
-        font-size: 12.5px;
-        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--dim);
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 5px 10px;
+        cursor: pointer;
       }
-
-      /* Secondary prose, not decoration — --muted rather than --faint, which at
-         this size sat below comfortable reading contrast. */
+      #copy:hover {
+        color: var(--fg);
+        border-color: #2a3033;
+      }
       .beneath {
-        font-size: 13.5px;
-        color: var(--muted);
-        margin: 12px 0 0;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--dim);
+        margin: 14px 0 0;
+        line-height: 1.7;
       }
 
-      .cta {
+      /* --- the split: raw source beside its rendered self ----------------- */
+
+      .split {
+        margin: 68px 0 0;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        box-shadow: 0 24px 70px -30px #000;
+      }
+      .pane-head {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        padding: 11px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+      .raw {
+        background: var(--raised);
+      }
+      .raw .pane-head {
+        color: var(--dim);
+      }
+      .raw pre {
+        margin: 0;
+        padding: 22px 20px 26px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.85;
+        color: #c8ced2;
+        overflow-x: auto;
+      }
+      .raw .tok {
+        color: var(--accent);
+      }
+      .raw .dimtok {
+        color: #5c6367;
+      }
+
+      /* The warm document, quoted inside the dark tool. */
+      .rendered {
+        background: var(--paper);
+        color: var(--ink);
+      }
+      .rendered .pane-head {
+        color: var(--ink-dim);
+        border-bottom-color: var(--rule);
+      }
+      .doc {
+        padding: 20px 24px 26px;
+        font-size: 14px;
+        line-height: 1.62;
+      }
+      .doc h3 {
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        margin: 0 0 10px;
+      }
+      .doc h4 {
+        font-size: 14.5px;
+        font-weight: 600;
+        margin: 18px 0 8px;
+      }
+      .doc ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .doc li {
         display: flex;
-        flex-wrap: wrap;
-        gap: 11px;
-        margin: 30px 0 0;
+        gap: 9px;
+        margin: 5px 0;
+        align-items: flex-start;
+      }
+      .box {
+        flex: none;
+        width: 13px;
+        height: 13px;
+        margin-top: 4px;
+        border-radius: 3px;
+        border: 1.5px solid #b9b5a6;
+      }
+      .box.on {
+        background: #2f7a2f;
+        border-color: #2f7a2f;
+        position: relative;
+      }
+      .box.on::after {
+        content: '';
+        position: absolute;
+        left: 3.5px;
+        top: 0.5px;
+        width: 3.5px;
+        height: 7px;
+        border: solid #fff;
+        border-width: 0 1.6px 1.6px 0;
+        transform: rotate(45deg);
+      }
+      .doc table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin-top: 4px;
+      }
+      .doc th,
+      .doc td {
+        text-align: left;
+        padding: 6px 8px;
+        border: 1px solid var(--rule);
+      }
+      .doc th {
+        background: #eae7dc;
+        font-weight: 600;
+      }
+      .doc code {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        background: #e7e4d8;
+        border-radius: 4px;
+        padding: 0.1em 0.35em;
       }
 
-      /* --- screenshot --------------------------------------------------- */
+      /* --- sections ------------------------------------------------------- */
+
+      section {
+        padding: 104px 0 0;
+      }
+      h2 {
+        font-size: clamp(25px, 2.9vw, 34px);
+        font-weight: 600;
+        letter-spacing: -0.024em;
+        margin: 0 0 14px;
+        max-width: 20ch;
+      }
+      .say {
+        color: var(--dim);
+        max-width: 62ch;
+        margin: 0 0 30px;
+      }
+      .say a {
+        color: var(--link);
+      }
+      .say a:hover {
+        text-decoration: underline;
+      }
+
+      .flow {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.85;
+        background: var(--raised);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 22px 24px;
+        overflow-x: auto;
+        color: #c8ced2;
+        margin: 0 0 26px;
+      }
+      .flow .c {
+        color: #5c6367;
+      }
+      .flow .g {
+        color: var(--accent);
+      }
 
       .shot {
-        margin: 46px 0 0;
+        margin: 30px 0 0;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+        line-height: 0;
       }
       .shot img {
         display: block;
         width: 100%;
         height: auto;
-        border: 1px solid var(--border);
+      }
+      figcaption {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--dim);
+        padding: 11px 16px;
+        background: var(--raised);
+        border-top: 1px solid var(--line);
+        line-height: 1.5;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+        gap: 1px;
+        background: var(--line);
+        border: 1px solid var(--line);
         border-radius: 10px;
+        overflow: hidden;
       }
-
-      /* --- sections ----------------------------------------------------- */
-
-      section {
-        padding: 52px 0 0;
+      .cell {
+        background: var(--bg);
+        padding: 24px 22px 26px;
       }
-
-      h2 {
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: var(--faint);
+      .cell h3 {
+        font-size: 15px;
         font-weight: 600;
-        margin: 0 0 20px;
+        margin: 0 0 8px;
+      }
+      .cell p {
+        margin: 0;
+        font-size: 14px;
+        color: var(--dim);
+      }
+      .cell .num {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--accent);
+        display: block;
+        margin-bottom: 12px;
       }
 
-      h3 {
-        font-size: 16.5px;
-        font-weight: 600;
-        margin: 30px 0 8px;
-      }
-
-      p {
-        margin: 0 0 15px;
-        max-width: 68ch;
-      }
-
-      pre {
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 9px;
-        padding: 18px;
-        overflow-x: auto;
-        font-size: 13px;
-        line-height: 1.62;
-        margin: 0 0 18px;
-        color: var(--fg);
-      }
-      pre .c {
-        color: var(--faint);
-      }
-
-      ul {
-        margin: 0 0 15px;
-        padding-left: 20px;
-        max-width: 68ch;
-      }
-      li {
-        margin-bottom: 7px;
-      }
-      li::marker {
-        color: var(--faint);
-      }
-
-      table {
+      table.cmds {
         width: 100%;
         border-collapse: collapse;
-        font-size: 14.5px;
-        margin-bottom: 18px;
+        font-size: 14px;
       }
-      th,
-      td {
-        text-align: left;
-        padding: 10px 12px;
-        border-bottom: 1px solid var(--border);
+      table.cmds td {
+        padding: 13px 14px;
+        border-bottom: 1px solid var(--line);
         vertical-align: top;
+        color: var(--dim);
       }
-      th {
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--faint);
-        font-weight: 600;
+      table.cmds tr:first-child td {
+        border-top: 1px solid var(--line);
       }
-      td:first-child {
+      table.cmds td:first-child {
         white-space: nowrap;
+        width: 1%;
+        padding-right: 28px;
+      }
+      table.cmds code {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--fg);
       }
       .scroll-x {
         overflow-x: auto;
       }
 
-      /* --- narrow screens ----------------------------------------------- */
-
-      @media (max-width: 560px) {
-        .wrap {
-          padding: 0 18px;
-        }
-        /* At 390px all three nav items plus the wordmark wrap mid-word. The
-           in-page anchor is the one that can go: the section is a scroll away,
-           whereas Playground and GitHub are the two things to leave with. */
-        .nav-secondary {
-          display: none;
-        }
-        nav {
-          gap: 15px;
-        }
-        .hero {
-          padding-top: 46px;
-        }
+      code.inline {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        color: var(--fg);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 0.1em 0.36em;
       }
 
-      /* --- footer ------------------------------------------------------- */
+      ul.plain {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        max-width: 66ch;
+      }
+      ul.plain li {
+        position: relative;
+        padding-left: 20px;
+        margin-bottom: 11px;
+        color: var(--dim);
+      }
+      ul.plain li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 9px;
+        width: 6px;
+        height: 1px;
+        background: var(--accent);
+      }
+      ul.plain strong {
+        color: var(--fg);
+        font-weight: 500;
+      }
 
       footer {
-        margin-top: 72px;
-        border-top: 1px solid var(--border);
-        padding: 26px 0 46px;
-        font-size: 13.5px;
-        color: var(--faint);
+        margin-top: 112px;
+        border-top: 1px solid var(--line);
+        padding: 26px 0 56px;
       }
       .foot {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px 20px;
+        gap: 10px 22px;
         justify-content: space-between;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--dim);
       }
-      footer a {
-        color: var(--muted);
+      .foot a:hover {
+        color: var(--fg);
+      }
+
+      @media (max-width: 820px) {
+        .split {
+          grid-template-columns: 1fr;
+        }
+        .rendered {
+          border-top: 1px solid var(--line);
+        }
+      }
+      @media (max-width: 620px) {
+        .wrap {
+          padding: 0 20px;
+        }
+        .hero {
+          padding-top: 62px;
+        }
+        section {
+          padding-top: 76px;
+        }
+        .nav-secondary {
+          display: none;
+        }
+        nav {
+          gap: 16px;
+        }
       }
     </style>
   </head>
@@ -402,18 +646,29 @@
   <body>
     <header>
       <div class="wrap bar">
-        <a class="wordmark" href="/">better<span>-</span>md</a>
+        <a class="mark" href="/"
+          ><span class="hash">#</span>better-md<span class="caret">_</span></a
+        >
         <nav>
           <a class="nav-secondary" href="#how">How it works</a>
+          <a class="nav-secondary" href="#security">Security</a>
+          <a
+            class="nav-secondary"
+            href="https://github.com/Sachchaa/better-md#readme"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Docs</a
+          >
           <a href="https://github.com/Sachchaa/better-md" target="_blank" rel="noopener noreferrer"
             >GitHub</a
           >
           <a
+            class="nav-cta"
             id="nav-playground"
             href="https://playground.better-md.dev"
             target="_blank"
             rel="noopener noreferrer"
-            >Playground&nbsp;→</a
+            >Try playground ↗</a
           >
         </nav>
       </div>
@@ -421,248 +676,253 @@
 
     <main class="wrap">
       <div class="hero">
-        <h1>Review your coding agent&rsquo;s plans in a real editor.</h1>
+        <p class="eyebrow">Open source · Local first</p>
+        <h1>
+          <span>Your coding agent wrote a plan.</span
+          ><span class="quiet">Read it like a document.</span>
+        </h1>
         <p class="lede">
-          Open real Markdown files from your terminal, watch them update live, and save edits
-          directly back to disk.
+          better-md opens your agent's Markdown in a local editor. Watch plans update live, make
+          changes, and save straight back to the original file.
         </p>
 
-        <div class="install">
-          <span class="prompt">$</span>
-          <code id="install-cmd">curl -fsSL https://better-md.dev/install.sh | sh</code>
-          <button class="btn" id="copy" type="button">Copy</button>
-        </div>
-        <p class="beneath">macOS and Linux · arm64 and x64 · no Node.js required</p>
-
-        <div class="cta">
+        <div class="actions">
+          <a class="btn btn-primary" href="#install">Install better-md</a>
           <a
-            class="btn btn-primary"
+            class="btn btn-ghost"
             id="cta-playground"
             href="https://playground.better-md.dev"
             target="_blank"
             rel="noopener noreferrer"
-            >Open the playground</a
+            >Try the playground →</a
           >
-          <a
-            class="btn"
-            href="https://github.com/Sachchaa/better-md"
-            target="_blank"
-            rel="noopener noreferrer"
-            >View source</a
-          >
+        </div>
+
+        <div class="cmd">
+          <span class="cmd-scroll">
+            <span class="sigil">$</span>
+            <code id="install-cmd">curl -fsSL https://better-md.dev/install.sh | sh</code>
+          </span>
+          <button id="copy" type="button">Copy</button>
+        </div>
+        <p class="beneath">macOS and Linux · arm64 and x64 · no Node.js required</p>
+
+        <!--
+          The signature: the product's own transformation, built rather than
+          screenshotted. Left is what the agent wrote, right is what you read.
+          Same content — the contrast between the two panes is the entire idea.
+        -->
+        <div class="split">
+          <div class="raw">
+            <div class="pane-head">~/.claude/plans/search-indexing.md</div>
+            <pre><span class="dimtok">## </span>Task 1: Tokenizer
+
+<span class="tok">- [x]</span> Split on Unicode word boundaries
+<span class="tok">- [x]</span> Fold case and strip diacritics
+<span class="tok">- [ ]</span> Property test: tokens round-trip
+
+<span class="dimtok">## </span>Task 2: Inverted index
+
+<span class="tok">|</span> Structure <span class="tok">|</span> Cost <span class="tok">|</span>
+<span class="tok">| --------- | ---: |</span>
+<span class="tok">|</span> `Map`     <span class="tok">|</span> O(1) <span class="tok">|</span>
+<span class="tok">|</span> `Uint32`  <span class="tok">|</span> 4n B <span class="tok">|</span></pre>
+          </div>
+          <div class="rendered">
+            <div class="pane-head">Preview · editable</div>
+            <div class="doc">
+              <h3>Task 1: Tokenizer</h3>
+              <ul>
+                <li><span class="box on"></span><span>Split on Unicode word boundaries</span></li>
+                <li><span class="box on"></span><span>Fold case and strip diacritics</span></li>
+                <li><span class="box"></span><span>Property test: tokens round-trip</span></li>
+              </ul>
+              <h4>Task 2: Inverted index</h4>
+              <table>
+                <tr>
+                  <th>Structure</th>
+                  <th style="text-align: right">Cost</th>
+                </tr>
+                <tr>
+                  <td><code>Map</code></td>
+                  <td style="text-align: right">O(1)</td>
+                </tr>
+                <tr>
+                  <td><code>Uint32</code></td>
+                  <td style="text-align: right">4n B</td>
+                </tr>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
 
-      <figure class="shot">
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="/site/screenshot-dark.png" />
+      <section id="how">
+        <p class="eyebrow">127.0.0.1 · ephemeral port</p>
+        <h2>Browsers can't open your files. This one can.</h2>
+        <p class="say">
+          That restriction is why a web editor normally cannot touch your work. The CLI closes the
+          gap by becoming a small local server the editor talks to — no account, no sync service,
+          nothing to upload.
+        </p>
+
+        <pre class="flow">
+$ better-md --plan
+   │
+   ├─ pick the newest plan your agent wrote     <span class="c">claude · cursor</span>
+   ├─ serve the editor from inside the binary   <span class="c">no dist/ on disk</span>
+   ├─ watch the workspace and stream changes    <span class="c">plans update live</span>
+   └─ open <span class="g">http://127.0.0.1:8080/?t=&lt;token&gt;</span></pre>
+
+        <div class="grid">
+          <div class="cell">
+            <span class="num">--plan</span>
+            <h3>Follows your agent</h3>
+            <p>
+              Opens whichever of Claude Code or Cursor wrote most recently.
+              <code class="inline">--agent cursor</code> picks one.
+            </p>
+          </div>
+          <div class="cell">
+            <span class="num">live</span>
+            <h3>Keeps up as it writes</h3>
+            <p>
+              The workspace is watched, so a plan updates on screen while the agent is still writing
+              it. Unsaved edits are never overwritten.
+            </p>
+          </div>
+          <div class="cell">
+            <span class="num">Cmd+S</span>
+            <h3>Saves to the real file</h3>
+            <p>
+              Nothing is written until you press it. If the file moved on disk meanwhile, the write
+              is refused rather than silently winning.
+            </p>
+          </div>
+        </div>
+
+        <figure class="shot">
           <img
             src="/site/screenshot-light.png"
             width="2000"
             height="1250"
-            alt="better-md showing an implementation plan: Markdown source on the left, rendered preview on the right"
+            alt="better-md showing a plan: Markdown source on the left, rendered preview on the right"
           />
-        </picture>
-      </figure>
-
-      <section>
-        <h2>What it is</h2>
-        <p>
-          Coding agents write a lot of Markdown — plans, specs, notes — and reading those in a
-          terminal pager or a raw text buffer wastes what they are.
-          <code>better-md --plan</code> opens the newest plan your agent wrote, properly rendered,
-          and keeps updating it while the agent is still writing. Tables, task lists, nested lists,
-          code blocks and quotes all render, and you can edit either pane.
-        </p>
-        <p>
-          It is not only for plans. Point it at any file or directory and it opens that instead.
-          Edits go back to the real file on disk with <kbd>Cmd</kbd>+<kbd>S</kbd> — nothing is
-          written until you press it.
-        </p>
-        <p>
-          It runs entirely on your machine. There is no account, no sync service, and no server to
-          send your documents to.
-        </p>
+          <figcaption>The editor, serving a real plan from disk on 127.0.0.1</figcaption>
+        </figure>
       </section>
 
-      <section id="how">
-        <h2>How it works</h2>
-        <p>
-          Browsers cannot open arbitrary files from disk — that restriction is the whole reason a
-          web-based editor normally can't touch your work. The CLI closes the gap by becoming a
-          small local server the editor talks to.
+      <section id="workflow">
+        <p class="eyebrow">~/.claude/settings.json</p>
+        <h2>Or never type the command at all.</h2>
+        <p class="say">
+          <code class="inline">better-md init claude</code> adds a Claude Code hook that opens each
+          finished plan the moment it is written. It previews by default; add
+          <code class="inline">--write</code> to apply it, and everything already in your settings
+          is preserved.
         </p>
+        <div class="cmd">
+          <span class="cmd-scroll">
+            <span class="sigil">$</span>
+            <code>better-md init claude --write</code>
+          </span>
+        </div>
+      </section>
 
-        <pre>
-$ better-md --plan
-   │
-   ├─ resolve one directory as the workspace
-   ├─ start http://127.0.0.1:8080 (or a free port)
-   │    ├─ serve the editor from assets embedded in the binary
-   │    ├─ GET/PUT /api/doc     <span class="c">documents, through a path-confinement gateway</span>
-   │    └─ GET     /api/events  <span class="c">change notifications (SSE)</span>
-   ├─ watch the workspace for changes
-   └─ open your browser at .../?t=&lt;token&gt;</pre>
-
-        <p>
-          Everything is scoped to that one directory. A fresh 32-byte token is minted per run and
-          never written to disk. The editor's own files are embedded into the binary at build time,
-          which is what makes a single self-contained executable possible — and it removes a whole
-          class of bug as a side effect: the route that serves the editor resolves no paths and
-          opens no files, so a request either names an embedded asset or it 404s.
+      <section id="security">
+        <p class="eyebrow">Bearer token · origin check · path confinement</p>
+        <h2>It runs a server on your machine, so it earns the trust.</h2>
+        <p class="say">
+          Any page in your browser can reach a localhost port. Three independent layers guard the
+          file API, and the editor's own assets are embedded in the binary — that route resolves no
+          paths and opens no files, so it cannot be walked out of.
         </p>
-
-        <h3>Saving is explicit</h3>
-        <p>
-          Nothing is written until you press <kbd>Cmd</kbd>+<kbd>S</kbd>. Auto-save would rewrite
-          plan files on every stray keystroke.
-        </p>
-        <p>
-          Each save carries the modification time the document was loaded at. If the file moved on
-          disk in the meantime, the write is refused rather than silently winning, and you choose:
-          keep yours, or take the version on disk. If the file was <em>deleted</em> rather than
-          changed, there is no version to take — so the editor says so and keeps your buffer,
-          because that buffer is now the only copy.
-        </p>
-
-        <h3>It keeps up with your agent</h3>
-        <p>
-          The CLI watches the workspace and streams changes to the editor, so a plan updates on
-          screen while an agent is still rewriting it. With no unsaved edits, the document just
-          refreshes. With unsaved edits, you get a conflict banner and nothing is overwritten in
-          either direction until you pick.
-        </p>
-
-        <h3>Safe by construction</h3>
-        <ul>
-          <li>Binds to <code>127.0.0.1</code> only — never a routable interface.</li>
+        <ul class="plain">
           <li>
-            Every <code>/api/*</code> request needs the run's token, compared in constant time, and
-            sent as a header so it cannot leak through a URL.
+            <strong>A fresh 32-byte token per run</strong>, required on every request, compared in
+            constant time, and sent as a header that a cross-site request cannot forge. It is
+            stripped from the address bar at boot.
+          </li>
+          <li><strong>Requests carrying a foreign origin are refused.</strong></li>
+          <li>
+            <strong>File access is confined to one directory</strong>, checked after resolving
+            symlinks, and limited to <code class="inline">.md</code>,
+            <code class="inline">.markdown</code> and <code class="inline">.txt</code>.
           </li>
           <li>
-            File access is confined to the workspace directory, checked after resolving symlinks,
-            and limited to Markdown and text extensions.
-          </li>
-          <li>Requests carrying a foreign <code>Origin</code> are refused.</li>
-          <li>
-            The token is stripped from the address bar at boot, so it never reaches your history.
+            <strong>Nothing is kept.</strong> No account, no config directory, no browser storage.
+            <code class="inline">better-md uninstall</code> removes the binary and its alias.
           </li>
         </ul>
       </section>
 
-      <section>
-        <h2>Commands</h2>
-        <div class="scroll-x">
-          <table>
-            <thead>
-              <tr>
-                <th>Command</th>
-                <th>What it opens</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>better-md --plan</code></td>
-                <td>
-                  Your agent's plans — whichever of Claude Code or Cursor wrote most recently, with
-                  that plan active
-                </td>
-              </tr>
-              <tr>
-                <td><code>better-md notes.md</code></td>
-                <td>A single file</td>
-              </tr>
-              <tr>
-                <td><code>better-md ./docs</code></td>
-                <td>Every Markdown file in a directory</td>
-              </tr>
-              <tr>
-                <td><code>better-md --port 4321</code></td>
-                <td>Pin a port — honoured exactly, and fails rather than moving if it is taken</td>
-              </tr>
-              <tr>
-                <td><code>better-md --no-open</code></td>
-                <td>Print the URL without launching a browser</td>
-              </tr>
-              <tr>
-                <td><code>better-md --version</code></td>
-                <td>What you have installed</td>
-              </tr>
-              <tr>
-                <td><code>better-md init claude</code></td>
-                <td>
-                  Preview a Claude Code hook that opens each finished plan; add
-                  <code>--write</code> to apply it
-                </td>
-              </tr>
-              <tr>
-                <td><code>better-md --agent cursor</code></td>
-                <td>
-                  Open Cursor's plans instead — <code>--plan</code> follows whichever agent wrote
-                  last
-                </td>
-              </tr>
-              <tr>
-                <td><code>better-md uninstall</code></td>
-                <td>Remove it, alias included — nothing else is left on disk</td>
-              </tr>
-              <tr>
-                <td><code>better-md update</code></td>
-                <td>
-                  Verify and replace this binary with the latest release —
-                  <code>--check-updates</code> just asks
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="beneath">
-          Nothing checks for updates on its own — better-md makes no network request unless you ask
-          it to with <code>update</code> or <code>--check-updates</code>.
-        </p>
-        <p class="beneath">
-          It serves on <code>8080</code> by default, so the URL stays the same between runs. If that
-          port is busy it says so and takes a free one instead — a taken port never stops it from
-          starting.
-        </p>
-        <p class="beneath">
-          <code>btr-md</code> is a shorter alias for the same binary, and each name reports itself
-          in <code>--help</code> and in error messages.
-        </p>
-      </section>
-
-      <section>
-        <h2>Install</h2>
-        <pre>$ curl -fsSL https://better-md.dev/install.sh | sh</pre>
-        <p>
-          The installer picks the right build for your platform, verifies it against the published
-          <code>SHA256SUMS</code> — and refuses to install if that does not match, or if the
-          checksums are missing — then drops it in <code>~/.local/bin</code>.
-        </p>
-        <p>
-          Prefer to read it first? It is served as plain text, so
+      <section id="install">
+        <p class="eyebrow">~/.local/bin</p>
+        <h2>One file. No runtime to install.</h2>
+        <p class="say">
+          The installer picks the right build, verifies it against the published
+          <code class="inline">SHA256SUMS</code> — refusing if that does not match — and drops it in
+          <code class="inline">~/.local/bin</code>. Prefer to read it first? It is served as plain
+          text, so
           <a href="https://better-md.dev/install.sh" target="_blank" rel="noopener noreferrer"
             >better-md.dev/install.sh</a
           >
-          opens in a browser, and the
-          <a
-            href="https://raw.githubusercontent.com/Sachchaa/better-md/main/install.sh"
-            target="_blank"
-            rel="noopener noreferrer"
-            >copy on GitHub</a
-          >
-          is identical. To uninstall later, run <code>better-md uninstall</code>. There is nothing
-          else on disk.
+          opens in a browser.
         </p>
-        <p>
-          Or skip installing altogether and
+        <div class="cmd">
+          <span class="cmd-scroll">
+            <span class="sigil">$</span>
+            <code>curl -fsSL https://better-md.dev/install.sh | sh</code>
+          </span>
+        </div>
+
+        <div class="scroll-x" style="margin-top: 34px">
+          <table class="cmds">
+            <tr>
+              <td><code>better-md --plan</code></td>
+              <td>
+                Your agent's plans — whichever of Claude Code or Cursor wrote most recently, with
+                that plan active
+              </td>
+            </tr>
+            <tr>
+              <td><code>better-md --agent cursor</code></td>
+              <td>Narrow <code>--plan</code> to one agent</td>
+            </tr>
+            <tr>
+              <td><code>better-md notes.md</code></td>
+              <td>A single file, or point it at a directory</td>
+            </tr>
+            <tr>
+              <td><code>better-md init claude</code></td>
+              <td>
+                Preview a Claude Code hook that opens each finished plan; add
+                <code>--write</code> to apply it
+              </td>
+            </tr>
+            <tr>
+              <td><code>better-md update</code></td>
+              <td>Verify and replace this binary with the latest release</td>
+            </tr>
+            <tr>
+              <td><code>better-md uninstall</code></td>
+              <td>Remove it, alias included</td>
+            </tr>
+          </table>
+        </div>
+        <p class="beneath">
+          Serves on 8080 by default, falling back to a free port if that one is busy.
+          <code class="inline">btr-md</code> is a shorter alias for the same binary.
+        </p>
+
+        <p class="say" style="margin-top: 30px">
+          Rather not install anything?
           <a
             id="body-playground"
             href="https://playground.better-md.dev"
             target="_blank"
             rel="noopener noreferrer"
-            >try the editor in your browser</a
+            >Try the editor in your browser</a
           >
           — it runs with sample documents, since opening your own files is exactly the part that
           needs the local command.
@@ -672,7 +932,7 @@ $ better-md --plan
 
     <footer>
       <div class="wrap foot">
-        <span>MIT licensed · built by Sachin Kanishka</span>
+        <span>MIT · built by Sachin Kanishka</span>
         <span>
           <a href="https://github.com/Sachchaa/better-md" target="_blank" rel="noopener noreferrer"
             >GitHub</a
@@ -697,8 +957,8 @@ $ better-md --plan
     </footer>
 
     <script>
-      // Progressive enhancement: the command is selectable text with or without
-      // this, and navigator.clipboard is undefined on insecure origins.
+      // Progressive enhancement: the command is selectable text either way, and
+      // navigator.clipboard is undefined on insecure origins.
       const button = document.getElementById('copy')
       const command = document.getElementById('install-cmd')
       button.addEventListener('click', async () => {
