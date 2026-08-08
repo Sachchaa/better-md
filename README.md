@@ -34,7 +34,8 @@ Coding agents write a lot of Markdown — plans, specs, notes — and reading th
 terminal pager or a raw text buffer wastes what they are. Browsers render Markdown
 beautifully but cannot open files from your disk. better-md closes that gap.
 
-- **One command, any file.** `better-md --plan` opens your newest Claude Code plan. Point
+- **One command, any file.** `better-md --plan` opens the newest plan your agent wrote,
+  from Claude Code or Cursor. Point
   it at a file or a directory instead and it opens that.
 - **Two-way editing.** Edit the Markdown source or the rendered preview — both stay in
   sync. `Cmd/Ctrl+S` writes back to the real file.

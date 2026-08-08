@@ -116,3 +116,24 @@ describe('pickAgent', () => {
     expect(pickAgent([], null)).toBeNull()
   })
 })
+
+describe('documentation stays in step with the registry', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+
+  // Adding an agent and forgetting the docs is exactly how the website ended up
+  // claiming --plan opened Claude Code's plans after Cursor was supported. Tying
+  // the check to AGENT_IDS means the next adapter cannot land silently.
+  it.each([...AGENT_IDS])('documents the %s adapter on every surface', async (id) => {
+    for (const file of ['README.md', 'public/site/index.html']) {
+      const text = await fs.readFile(path.join(root, file), 'utf8')
+      expect(text.toLowerCase(), `${file} never mentions the ${id} adapter`).toContain(id)
+    }
+  })
+
+  it('does not tie --plan to a single agent', async () => {
+    const readme = await fs.readFile(path.join(root, 'README.md'), 'utf8')
+    // The exact phrasing that drifted: --plan follows whichever agent wrote last,
+    // so copy tying it to one tool is wrong rather than merely dated.
+    expect(readme).not.toMatch(/--plan` opens your newest Claude Code plan/)
+  })
+})

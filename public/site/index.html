@@ -475,11 +475,9 @@
           code blocks and quotes all render, and you can edit either pane.
         </p>
         <p>
-          The second is <code>better-md</code>, a command that opens real files from your machine in
-          it. Coding agents write a lot of Markdown — plans, specs, notes — and reading those in a
-          terminal pager or a raw text buffer wastes what they are. One command opens the file you
-          actually care about, properly rendered, and <kbd>Cmd</kbd>+<kbd>S</kbd> writes your edits
-          back to disk.
+          It is not only for plans. Point it at any file or directory and it opens that instead.
+          Edits go back to the real file on disk with <kbd>Cmd</kbd>+<kbd>S</kbd> — nothing is
+          written until you press it.
         </p>
         <p>
           It runs entirely on your machine. There is no account, no sync service, and no server to
@@ -567,7 +565,8 @@ $ better-md --plan
               <tr>
                 <td><code>better-md --plan</code></td>
                 <td>
-                  Claude Code's plans from <code>~/.claude/plans</code>, with the newest one active
+                  Your agent's plans — whichever of Claude Code or Cursor wrote most recently, with
+                  that plan active
                 </td>
               </tr>
               <tr>
@@ -592,7 +591,10 @@ $ better-md --plan
               </tr>
               <tr>
                 <td><code>better-md init claude</code></td>
-                <td>Add a Claude Code hook that opens each finished plan automatically</td>
+                <td>
+                  Preview a Claude Code hook that opens each finished plan; add
+                  <code>--write</code> to apply it
+                </td>
               </tr>
               <tr>
                 <td><code>better-md --agent cursor</code></td>
