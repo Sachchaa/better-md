@@ -29,7 +29,7 @@ Usage:
   ${name} <directory>      every markdown file in a directory
   ${name} update           replace this binary with the latest release
   ${name} uninstall        remove better-md and its btr-md alias
-  ${name} init claude      add a Claude Code hook that opens each finished plan
+  ${name} init claude      preview a Claude Code hook for each finished plan
 
 Options:
   --agent <id>      which agent's plans --plan opens (claude, cursor)

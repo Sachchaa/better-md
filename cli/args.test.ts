@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { InfoRequest, parseCliArgs, UsageError } from './args.js'
+import { InfoRequest, parseCliArgs, usage, UsageError } from './args.js'
 
 describe('parseCliArgs', () => {
   it('accepts a single file target', () => {
@@ -106,6 +106,14 @@ describe('parseCliArgs', () => {
     const opts = parseCliArgs(['./update'])
     expect(opts.command).toBeNull()
     expect(opts.target).toBe('./update')
+  })
+
+  // The help said init "adds" a hook while the default is preview-only, in both
+  // the CLI and the docs. Tying the wording to the default keeps the two honest:
+  // if the default ever becomes write, this fails and the copy gets revisited.
+  it('describes init as previewing, matching its default', () => {
+    expect(parseCliArgs(['init', 'claude']).write).toBe(false)
+    expect(usage()).toMatch(/init claude\s+preview/i)
   })
 
   it('takes uninstall as a subcommand', () => {

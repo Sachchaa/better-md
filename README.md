@@ -134,7 +134,7 @@ better-md --version       # what you have
 better-md --check-updates # whether a newer release exists
 better-md update          # replace this binary with the latest release
 better-md uninstall       # remove better-md and its btr-md alias
-better-md init claude     # add a hook that opens each finished plan
+better-md init claude     # preview a hook that opens each finished plan
 better-md --detach ./docs # serve in the background and return
 ```
 
