@@ -6,7 +6,7 @@
     <title>better-md — read your coding agent's plans like documents</title>
     <meta
       name="description"
-      content="better-md opens your agent's Markdown in a local editor. Watch plans update live, edit them, and save straight back to the original file. No account, no server, nothing leaves your machine."
+      content="better-md opens your agent's Markdown in a local editor. Watch plans update live, edit them, and save straight back to the original file. No account, no cloud service, nothing leaves your machine."
     />
     <!-- www, not the apex: better-md.dev 308-redirects to www, so www is the URL
          that actually serves this page. -->
@@ -758,7 +758,7 @@
       </div>
 
       <section id="how">
-        <p class="eyebrow">127.0.0.1 · ephemeral port</p>
+        <p class="eyebrow">127.0.0.1 · local only</p>
         <h2>Browsers can't open your files. This one can.</h2>
         <p class="say">
           That restriction is why a web editor normally cannot touch your work. The CLI closes the
@@ -816,10 +816,9 @@ $ better-md --plan
         <p class="eyebrow">~/.claude/settings.json</p>
         <h2>Or never type the command at all.</h2>
         <p class="say">
-          <code class="inline">better-md init claude</code> adds a Claude Code hook that opens each
-          finished plan the moment it is written. It previews by default; add
-          <code class="inline">--write</code> to apply it, and everything already in your settings
-          is preserved.
+          <code class="inline">better-md init claude</code> shows you a Claude Code hook that opens
+          each finished plan the moment it is written. Add <code class="inline">--write</code> to
+          apply it, and everything already in your settings is preserved.
         </p>
         <div class="cmd">
           <span class="cmd-scroll">
