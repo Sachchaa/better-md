@@ -1,0 +1,57 @@
+name: Feature or agent request
+description: Suggest an improvement or request support for another coding agent
+title: '[Feature]: '
+labels:
+  - enhancement
+
+body:
+  - type: dropdown
+    id: type
+    attributes:
+      label: What kind of request is this?
+      options:
+        - Product feature
+        - Coding agent integration
+        - Markdown support
+        - CLI improvement
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the workflow or problem rather than only the feature.
+      placeholder: When I use Better MD with..., I currently have to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like Better MD to do?
+      placeholder: It would be useful if Better MD could...
+    validations:
+      required: true
+
+  - type: input
+    id: agent
+    attributes:
+      label: Coding agent
+      description: If this is an integration request, which agent or tool?
+      placeholder: Claude Code, Cursor, Copilot CLI, etc.
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Additional context
+      description: Links, screenshots, example files, or other useful context.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for a similar request.
+          required: true
