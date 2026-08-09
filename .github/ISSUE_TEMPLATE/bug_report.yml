@@ -1,0 +1,81 @@
+name: Bug report
+description: Report something that isn't working correctly in Better MD
+title: '[Bug]: '
+labels:
+  - bug
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a Better MD issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Tell us what you expected and what happened instead.
+      placeholder: I expected..., but...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Include the commands or steps that reproduce the problem.
+      placeholder: |
+        1. Run `better-md ...`
+        2. Open ...
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Better MD version
+      description: Run `better-md --version`.
+      placeholder: v0.6.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: architecture
+    attributes:
+      label: Architecture
+      placeholder: arm64 or x64
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      placeholder: Chrome, Safari, Firefox, etc.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Add any useful terminal output, logs, or screenshots.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and couldn't find the same problem.
+          required: true
+        - label: This report does not contain secrets or sensitive project data.
+          required: true
