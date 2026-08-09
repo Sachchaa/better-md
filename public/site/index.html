@@ -850,8 +850,10 @@ $ better-md --plan
             <code class="inline">.markdown</code> and <code class="inline">.txt</code>.
           </li>
           <li>
-            <strong>Nothing is kept.</strong> No account, no config directory, no browser storage.
-            <code class="inline">better-md uninstall</code> removes the binary and its alias.
+            <strong>Almost nothing is kept.</strong> No account and no browser storage. The one
+            exception is <code class="inline">~/.better-md</code>, where a detached run records the
+            port it is listening on so the next one reuses it instead of starting a second server —
+            and <code class="inline">better-md uninstall</code> removes that along with the binary.
           </li>
         </ul>
       </section>

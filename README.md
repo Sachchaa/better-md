@@ -1,7 +1,7 @@
 <h1 align="center">better-md</h1>
 
 <p align="center">
-  Review your coding agent&rsquo;s plans in a real editor.
+  Your coding agent wrote a plan. Read it like a document.
 </p>
 
 <p align="center">

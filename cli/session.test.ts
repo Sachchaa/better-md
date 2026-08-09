@@ -120,3 +120,24 @@ describe('removeSessionSync', () => {
     expect(() => removeSessionSync('/no/such/file.json')).not.toThrow()
   })
 })
+
+describe('the state directory is disclosed', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+
+  // This is the only thing better-md writes outside a workspace, so a page
+  // claiming it keeps nothing is wrong rather than merely dated — the website
+  // said exactly that for two commits after --detach shipped. Tied to the code
+  // so the claim cannot drift away from the behaviour again.
+  it.each(['README.md', 'public/site/index.html'])('%s mentions it', async (file) => {
+    const text = await fs.readFile(path.join(root, file), 'utf8')
+    // `~/.better-md`, not `.better-md`: the bare form is satisfied by the
+    // canonical URL www.better-md.dev, so the first version of this check passed
+    // whether or not the directory was disclosed at all.
+    // The parent, which is what uninstall removes and what the docs name.
+    // Asserting the bare string `.better-md` would be satisfied by the canonical
+    // URL www.better-md.dev — the first version of this check passed whether or
+    // not the directory was disclosed at all.
+    const disclosed = path.dirname(sessionDir('~'))
+    expect(text, `${file} does not disclose ${disclosed}`).toContain(disclosed)
+  })
+})
