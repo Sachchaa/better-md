@@ -22,6 +22,7 @@ import {
 } from './ansi.js'
 import { decodeKeys, type Key } from './keys.js'
 import { buildOutline, outlineLines, type OutlineEntry } from './outline.js'
+import { findMatches, highlight, stepMatch, type Match } from './search.js'
 import { renderDocument, type Line } from './render.js'
 import {
   anchorAt,
@@ -114,6 +115,13 @@ export function createApp(options: AppOptions): App {
   let failure: string | null = null
   /** Non-null while the outline overlay is open, holding the selected index. */
   let outline: { selected: number } | null = null
+  /**
+   * The search state.
+   *
+   * `typing` is true while the prompt is open, which is what makes every
+   * printable key part of the query rather than a navigation command.
+   */
+  let search: { query: string; typing: boolean; matches: Match[]; current: number } | null = null
   let loading: Promise<void> = Promise.resolve()
 
   const colour = (): boolean => supportsColour(env, tty.isTTY)
@@ -136,9 +144,16 @@ export function createApp(options: AppOptions): App {
   }
 
   const footer = (): string => {
+    if (search !== null && search.typing) return chrome(` /${search.query}`)
+
     const end = Math.min(view.total, view.top + view.height)
     const percent = view.total === 0 ? 100 : Math.round((end / view.total) * 100)
-    const left = ` ${percent}%`
+    const left =
+      search === null
+        ? ` ${percent}%`
+        : search.matches.length === 0
+          ? ` No match for "${search.query}"`
+          : ` ${search.current + 1}/${search.matches.length} for "${search.query}"`
     const right = outline === null ? 'q quit  j/k scroll  o outline ' : 'enter open  esc close '
     const pad = ' '.repeat(
       Math.max(1, columns() - displayWidth(left) - displayWidth(right))
@@ -160,7 +175,21 @@ export function createApp(options: AppOptions): App {
     const height = Math.max(1, bodyHeight() - banner.length)
     const body =
       outline === null
-        ? lines.slice(view.top, view.top + height).map((l) => truncate(l.text, columns()))
+        ? lines.slice(view.top, view.top + height).map((l, offset) => {
+            const index = view.top + offset
+            const onLine = search?.matches.filter((m) => m.line === index) ?? []
+            if (onLine.length === 0) return truncate(l.text, columns())
+            const current = search?.matches[search.current]
+            return truncate(
+              highlight(
+                l.text,
+                onLine,
+                current === undefined ? -1 : onLine.indexOf(current),
+                colour()
+              ),
+              columns()
+            )
+          })
         : outlineLines(buildOutline(lines), outline.selected, {
             width: columns(),
             unicode: supportsUnicode(env),
@@ -216,6 +245,7 @@ export function createApp(options: AppOptions): App {
       height: bodyHeight(),
       total: lines.length,
     })
+    research()
     draw()
   }
 
@@ -275,6 +305,57 @@ export function createApp(options: AppOptions): App {
     return true
   }
 
+  /** Recompute the matches against the document as it is now. */
+  const research = (): void => {
+    if (search === null) return
+    search.matches = findMatches(lines, search.query)
+    // The document may have been rewritten under an active search, leaving the
+    // old index pointing past the end of the new match list.
+    search.current = Math.min(search.current, Math.max(0, search.matches.length - 1))
+  }
+
+  const showMatch = (): void => {
+    const match = search?.matches[search.current]
+    if (match !== undefined) view = scrollToLine(view, match.line)
+    draw()
+  }
+
+  /**
+   * Keys while the search prompt is open.
+   *
+   * Every printable key is part of the query: g, G, n and j are all ordinary
+   * letters to someone typing, and treating them as navigation would scroll the
+   * page out from under the prompt.
+   */
+  const handleTyping = (k: Key): boolean => {
+    if (search === null || !search.typing) return false
+
+    if (k.name === 'escape') {
+      search = null
+      draw()
+      return true
+    }
+    if (k.name === 'enter') {
+      search.typing = false
+      research()
+      showMatch()
+      return true
+    }
+    if (k.name === 'backspace') {
+      search.query = search.query.slice(0, -1)
+      draw()
+      return true
+    }
+    if (k.name === 'char') {
+      search.query += k.value
+      draw()
+      return true
+    }
+    // Arrows and page keys are ignored rather than passed through, so the page
+    // cannot move while the prompt is open.
+    return true
+  }
+
   const handle = (k: Key): void => {
     if (k.name === 'ctrl-c') {
       stop()
@@ -285,8 +366,16 @@ export function createApp(options: AppOptions): App {
       stop()
       return
     }
-    // Checked after quit so an overlay can never trap the reader.
+    // Both checked after quit, so neither can trap the reader.
+    if (handleTyping(k)) return
     if (handleOutline(k, buildOutline(lines))) return
+    if (k.name === 'escape') {
+      // Clears the highlighting left behind once the prompt has closed.
+      if (search === null) return
+      search = null
+      draw()
+      return
+    }
     if (k.name === 'up') return move(scrollBy(view, -1))
     if (k.name === 'down') return move(scrollBy(view, 1))
     if (k.name === 'pageup') return move(pageBy(view, -1))
@@ -311,6 +400,20 @@ export function createApp(options: AppOptions): App {
         outline = { selected: 0 }
         draw()
         return
+      case '/':
+        search = { query: '', typing: true, matches: [], current: 0 }
+        draw()
+        return
+      case 'n':
+        if (search === null) return
+        research()
+        search.current = stepMatch(search.matches, search.current, 1)
+        return showMatch()
+      case 'N':
+        if (search === null) return
+        research()
+        search.current = stepMatch(search.matches, search.current, -1)
+        return showMatch()
       case 'r':
         return reload()
       default:

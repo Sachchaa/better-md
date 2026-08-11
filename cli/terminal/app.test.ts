@@ -5,6 +5,13 @@ import { createApp } from './app.js'
 
 const CTRL_C = '\x03'
 const ESC = '\x1b'
+const DOWN = `${ESC}[B`
+
+/** The frame as the reader sees it, for assertions about wording and counts. */
+// The escape byte is the thing being matched, so no-control-regex cannot apply.
+// eslint-disable-next-line no-control-regex
+const ANSI = /\x1b\[[0-9;?]*[a-zA-Z]/g
+const stripAnsi = (s: string): string => s.replace(ANSI, '')
 
 function harness(markdown = '# Title\n\nbody', rows = 24) {
   const written: string[] = []
@@ -484,6 +491,154 @@ describe('createApp', () => {
       await h.reloaded(() => h.change('# Only one heading now'))
       h.press('\r')
       expect(h.frame()).toContain('Only one heading now')
+      h.app.stop()
+    })
+  })
+
+  describe('search', () => {
+    const doc = `# Goal\n\nthe first needle here\n\n## Tasks\n\n${long}\n\nanother needle at the end`
+
+    it('opens a prompt on / and shows what is being typed', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('nee')
+      expect(h.frame()).toContain('/nee')
+      h.app.stop()
+    })
+
+    it('jumps to the first match on enter', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('another needle')
+      h.press('\r')
+      expect(h.frame()).toContain('another needle')
+      h.app.stop()
+    })
+
+    it('cycles matches with n and N', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('needle')
+      h.press('\r')
+      const first = h.frame()
+      h.press('n')
+      expect(h.frame()).not.toBe(first)
+      h.press('N')
+      expect(h.frame()).toBe(first)
+      h.app.stop()
+    })
+
+    it('backspaces the query', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('needlx')
+      h.press('\x7f')
+      h.press('e')
+      expect(h.frame()).toContain('/needle')
+      h.app.stop()
+    })
+
+    it('says so when nothing matches', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('zebra')
+      h.press('\r')
+      expect(h.frame()).toContain('No match')
+      h.app.stop()
+    })
+
+    it('abandons the search on escape, leaving the document where it was', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      const before = h.frame()
+      h.press('/')
+      h.press('another')
+      h.press(ESC)
+      expect(h.frame()).toBe(before)
+      h.app.stop()
+    })
+
+    it('does not scroll the document while the query is being typed', async () => {
+      // g, G and j are all ordinary characters in a query. Treating them as
+      // navigation would scroll the page out from under the prompt.
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('gGj ')
+      expect(h.frame()).toContain('/gGj ')
+      h.press(ESC)
+      h.app.stop()
+    })
+
+    it('still quits on ctrl-c while typing a query', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('nee')
+      h.press(CTRL_C)
+      expect(h.frame()).toBe(CURSOR_SHOW + ALT_SCREEN_OFF)
+    })
+
+    it('does not scroll on the arrow keys while a query is being typed', async () => {
+      // Arrows are not part of a query, but they must not reach the document
+      // either: the page moving out from under the prompt is disorienting.
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('nee')
+      const before = h.frame()
+      h.press(DOWN)
+      expect(h.frame()).toBe(before)
+      h.app.stop()
+    })
+
+    it('refreshes the match count when the document changes under it', async () => {
+      const h = harness('# A\n\nneedle one')
+      await h.app.start()
+      h.press('/')
+      h.press('needle')
+      h.press('\r')
+      expect(stripAnsi(h.frame())).toContain('1/1')
+      // No keypress in between: the reload alone must re-find the matches, or
+      // the highlighting is drawn at line numbers that no longer exist.
+      await h.reloaded(() => h.change('# A\n\nneedle one\n\nneedle two'))
+      expect(stripAnsi(h.frame())).toContain('1/2')
+      h.app.stop()
+    })
+
+    it('never claims a match number beyond the match count', async () => {
+      const many = '# A\n\nneedle\n\nneedle\n\nneedle\n\nneedle'
+      const h = harness(many)
+      await h.app.start()
+      h.press('/')
+      h.press('needle')
+      h.press('\r')
+      h.press('n')
+      h.press('n')
+      expect(stripAnsi(h.frame())).toContain('3/4')
+      await h.reloaded(() => h.change('# A\n\nneedle'))
+      const shown = /(\d+)\/(\d+) for/.exec(stripAnsi(h.frame()))
+      expect(shown).not.toBeNull()
+      expect(Number(shown?.[1])).toBeLessThanOrEqual(Number(shown?.[2]))
+      h.app.stop()
+    })
+
+    it('keeps the matches usable after the document is rewritten', async () => {
+      // The agent rewrites the plan while a search is active. Stale match
+      // offsets would point into lines that no longer exist.
+      const h = harness(doc)
+      await h.app.start()
+      h.press('/')
+      h.press('needle')
+      h.press('\r')
+      await h.reloaded(() => h.change('# Small\n\nno needles here'))
+      h.press('n')
+      expect(h.frame()).toContain('Small')
       h.app.stop()
     })
   })

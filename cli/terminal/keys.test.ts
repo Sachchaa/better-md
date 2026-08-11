@@ -74,6 +74,13 @@ describe('decodeKeys', () => {
     expect(decodeKeys(`j${ESC}`)).toEqual([{ name: 'char', value: 'j' }, { name: 'escape' }])
   })
 
+  it('reads escape followed by a key as two keypresses', () => {
+    // Escape then q, typed fast enough to arrive in one read, must still quit.
+    // Treating the pair as Alt-q swallowed both.
+    expect(decodeKeys(`${ESC}q`)).toEqual([{ name: 'escape' }, { name: 'char', value: 'q' }])
+    expect(decodeKeys(`${ESC}j`)).toEqual([{ name: 'escape' }, { name: 'char', value: 'j' }])
+  })
+
   it('does not split a character that needs two code units', () => {
     expect(decodeKeys('🚀')).toEqual([{ name: 'char', value: '🚀' }])
   })

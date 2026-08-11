@@ -78,10 +78,11 @@ export function decodeKeys(data: string): Key[] {
       let end = i + 2
       while (end < data.length && !isFinal(data[end])) end++
       token = data.slice(i, Math.min(end + 1, data.length))
-    } else if (i + 1 < data.length) {
-      // ESC followed by a character is Alt-<key>, which this viewer does not use.
-      token = data.slice(i, i + 2)
     } else {
+      // ESC followed by anything that is not a sequence introducer is the Escape
+      // key, and whatever came after it is the next keypress. Consuming both as
+      // Alt-<key> dropped them: pressing Escape and then q quickly enough for
+      // one read swallowed the quit.
       token = ESC
     }
 
