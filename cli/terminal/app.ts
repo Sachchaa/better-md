@@ -221,12 +221,19 @@ export function createApp(options: AppOptions): App {
         : search.matches.length === 0
           ? ` No match for "${search.query}"`
           : ` ${search.current + 1}/${search.matches.length} for "${search.query}"`
-    // One line on an 80-column terminal cannot hold every key, so it advertises
-    // the overlay rather than truncating a list.
+    // The full list needs 88 columns alongside the status, so on an 80-column
+    // terminal it would be truncated — and truncation cuts from the right, which
+    // is where `q quit` is. The short line drops the keys that are either
+    // discoverable by trying them (j/k, since the arrows work too) or listed
+    // under `?`.
+    const full = 'j/k navigate  / search  o outline  e editor  b browser  ? help  q quit '
+    const short = '/ search  o outline  ? help  q quit '
     const right =
       outline !== null || help
         ? 'enter open  esc close '
-        : 'j/k navigate  / search  o outline  ? help  q quit '
+        : displayWidth(left) + displayWidth(full) <= columns()
+          ? full
+          : short
     const pad = ' '.repeat(
       Math.max(1, columns() - displayWidth(left) - displayWidth(right))
     )

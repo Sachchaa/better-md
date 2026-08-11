@@ -9,7 +9,7 @@ const ESC = '\x1b'
 const ANSI = /\x1b\[[0-9;?]*[a-zA-Z]/g
 const seen = (s: string): string => s.replace(ANSI, '')
 
-function harness(markdown = '# Title\n\nbody') {
+function harness(markdown = '# Title\n\nbody', columns = 80) {
   const written: string[] = []
   const input = new EventEmitter() as EventEmitter & {
     setRawMode?(on: boolean): void
@@ -31,7 +31,7 @@ function harness(markdown = '# Title\n\nbody') {
     },
     tty: {
       write: (s) => written.push(s),
-      columns: 80,
+      columns,
       rows: 24,
       isTTY: true,
       on: () => {},
@@ -190,14 +190,27 @@ describe('the help overlay', () => {
     h.app.stop()
   })
 
-  it('keeps the footer short, with the full list in the overlay', async () => {
-    // The footer is one line on an 80-column terminal. Everything cannot fit,
-    // so it advertises the overlay instead of truncating a list of keys.
-    const h = harness()
+  it('never truncates the footer, whatever the width', async () => {
+    // Truncation cuts from the right, which is where `q quit` is — the one key a
+    // stuck reader needs. Both keys that get someone out stay visible.
+    for (const columns of [60, 80, 100, 120]) {
+      const h = harness('# Title\n\nbody', columns)
+      await h.app.start()
+      const footer = h.frame().split('\n').pop() ?? ''
+      expect(footer.length, `at ${columns} columns`).toBeLessThanOrEqual(columns)
+      expect(footer, `at ${columns} columns`).toContain('q quit')
+      expect(footer, `at ${columns} columns`).toContain('? help')
+      h.app.stop()
+    }
+  })
+
+  it('advertises the editor and browser keys when there is room', async () => {
+    // Neither is discoverable by trying keys, so a wide terminal should say so.
+    const h = harness('# Title\n\nbody', 120)
     await h.app.start()
     const footer = h.frame().split('\n').pop() ?? ''
-    expect(footer).toContain('? help')
-    expect(footer.length).toBeLessThanOrEqual(80)
+    expect(footer).toContain('e editor')
+    expect(footer).toContain('b browser')
     h.app.stop()
   })
 })
