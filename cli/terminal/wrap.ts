@@ -7,7 +7,9 @@
  * up as ragged columns and boxes that do not close.
  */
 
-// Matches SGR sequences, which is all this module emits.
+// Matches SGR sequences, which is all this module emits. The ESC control
+// character is the thing being matched, so no-control-regex cannot apply here.
+// eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;]*m/g
 
 /**
