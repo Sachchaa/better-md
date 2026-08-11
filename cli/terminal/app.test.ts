@@ -365,4 +365,126 @@ describe('createApp', () => {
       h.app.stop()
     })
   })
+
+  describe('the outline overlay', () => {
+    const doc = `# Goal\n\nbody\n\n## Tasks\n\n${long}\n\n## Risks\n\nnone`
+
+    it('opens on o and lists the headings', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('o')
+      const frame = h.frame()
+      expect(frame).toContain('Goal')
+      expect(frame).toContain('Tasks')
+      expect(frame).toContain('Risks')
+      h.app.stop()
+    })
+
+    it('closes on o and on escape, leaving the document where it was', async () => {
+      for (const key of ['o', ESC]) {
+        const h = harness(doc)
+        await h.app.start()
+        const before = h.frame()
+        h.press('o')
+        expect(h.frame()).not.toBe(before)
+        h.press(key)
+        expect(h.frame()).toBe(before)
+        h.app.stop()
+      }
+    })
+
+    it('moves the selection with j and the arrows', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('o')
+      const first = h.frame()
+      h.press('j')
+      expect(h.frame()).not.toBe(first)
+      h.press('k')
+      expect(h.frame()).toBe(first)
+      h.app.stop()
+    })
+
+    it('does not run the selection off either end', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('o')
+      const top = h.frame()
+      h.press('k')
+      expect(h.frame()).toBe(top)
+      for (let i = 0; i < 20; i++) h.press('j')
+      const bottom = h.frame()
+      h.press('j')
+      expect(h.frame()).toBe(bottom)
+      h.app.stop()
+    })
+
+    it('scrolls to the chosen heading on enter and closes', async () => {
+      const h = harness(doc)
+      await h.app.start()
+      h.press('o')
+      h.press('j')
+      h.press('j')
+      h.press('\r')
+      const frame = h.frame()
+      // The overlay is gone and the document has moved to Risks.
+      expect(frame).toContain('Risks')
+      expect(frame).not.toContain('▸')
+      h.app.stop()
+    })
+
+    it('leaves the document keys inert while it is open', async () => {
+      // j moves the selection, not the page. Letting both happen means closing
+      // the overlay drops the reader somewhere they never chose.
+      //
+      // G, g and space are the ones that matter here: they are not overlay keys,
+      // so a fall-through would scroll the document invisibly behind the
+      // overlay. Pressing only j proves nothing, since the overlay handles j.
+      const h = harness(doc)
+      await h.app.start()
+      const start = h.frame()
+      h.press('o')
+      h.press('G')
+      h.press(' ')
+      h.press('j')
+      h.press(ESC)
+      // No `g` in that sequence: it scrolls back to the top, which is where the
+      // document already was, so a leak would land back on `start` and the test
+      // would pass while the bug was live.
+      expect(h.frame()).toBe(start)
+      h.app.stop()
+    })
+
+    it('still quits on q and on ctrl-c while open', async () => {
+      // An overlay that swallows the quit key traps the reader.
+      for (const key of ['q', CTRL_C]) {
+        const h = harness(doc)
+        await h.app.start()
+        h.press('o')
+        h.press(key)
+        expect(h.frame()).toBe(CURSOR_SHOW + ALT_SCREEN_OFF)
+      }
+    })
+
+    it('says so for a document with no headings', async () => {
+      const h = harness('just prose, no headings at all')
+      await h.app.start()
+      h.press('o')
+      expect(h.frame()).toContain('No headings')
+      h.app.stop()
+    })
+
+    it('survives the document shrinking under an open overlay', async () => {
+      // The agent rewrites the plan while the outline is open and the selected
+      // heading is gone. Indexing blind would read past the end.
+      const h = harness(doc)
+      await h.app.start()
+      h.press('o')
+      for (let i = 0; i < 3; i++) h.press('j')
+      await h.reloaded(() => h.change('# Only one heading now'))
+      h.press('\r')
+      expect(h.frame()).toContain('Only one heading now')
+      h.app.stop()
+    })
+  })
 })

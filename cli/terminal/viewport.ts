@@ -61,7 +61,7 @@ export function scrollToLine(v: Viewport, line: number): Viewport {
  */
 export function anchorAt(lines: Line[], top: number): string | null {
   for (let i = Math.min(top, lines.length - 1); i >= 0; i--) {
-    const id = lines[i]?.headingId
+    const id = lines[i]?.heading?.id
     if (id !== undefined) return id
   }
   return null
@@ -70,7 +70,7 @@ export function anchorAt(lines: Line[], top: number): string | null {
 /** Where that anchor sits in a freshly rendered document. */
 export function restoreAnchor(lines: Line[], anchor: string | null, fallback: number): number {
   if (anchor === null) return fallback
-  const found = lines.findIndex((l) => l.headingId === anchor)
+  const found = lines.findIndex((l) => l.heading?.id === anchor)
   // A heading the agent deleted or renamed leaves nothing to aim at, so hold
   // the old offset rather than jumping the reader to the top.
   return found === -1 ? fallback : found

@@ -13,8 +13,17 @@ import { displayWidth, truncate, wrap } from './wrap.js'
 
 export interface Line {
   text: string
-  /** Present on the first line of a heading: outline targets and reload anchors. */
-  headingId?: string
+  /**
+   * Present on a heading's own line, carrying everything a consumer needs.
+   *
+   * The outline and the reload anchor both read ids from here rather than
+   * deriving their own: two id generators over the same document will
+   * eventually disagree, and then a jump lands on the wrong section.
+   *
+   * `text` is the plain heading, without the inline markers or the styling in
+   * `Line.text`, so a list of headings reads as a list of headings.
+   */
+  heading?: { id: string; level: number; text: string }
 }
 
 export interface RenderOptions {
@@ -99,6 +108,10 @@ function unhtml(text: string): string {
  * markup, so there is no XSS surface. Order matters — images before links, or
  * `![alt](src)` loses its bang and becomes a link.
  */
+function plain(text: string): string {
+  return inline(text, { width: 0, unicode: false, colour: false })
+}
+
 function inline(text: string, o: RenderOptions): string {
   const on = { enabled: o.colour }
   return unhtml(text)
@@ -230,10 +243,15 @@ export function renderDocument(blocks: Block[], o: RenderOptions): Line[] {
     switch (block.kind) {
       case 'heading': {
         const text = inline(block.text, o)
-        const id = headingId(block.text, seen)
         out.push({
           text: block.level <= 2 ? style(text, 'bold', { enabled: o.colour }) : text,
-          headingId: id,
+          heading: {
+            id: headingId(block.text, seen),
+            level: block.level,
+            // Plain: the styled form lives in `text`, and a heading list wants
+            // the words rather than the escape codes around them.
+            text: plain(block.text),
+          },
         })
         // Only h1 and h2 get a rule. Ruling every level turns a deep plan into
         // more rule than prose.

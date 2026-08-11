@@ -21,6 +21,7 @@ import {
   supportsUnicode,
 } from './ansi.js'
 import { decodeKeys, type Key } from './keys.js'
+import { buildOutline, outlineLines, type OutlineEntry } from './outline.js'
 import { renderDocument, type Line } from './render.js'
 import {
   anchorAt,
@@ -28,6 +29,7 @@ import {
   pageBy,
   restoreAnchor,
   scrollBy,
+  scrollToLine,
   toBottom,
   toTop,
   type Viewport,
@@ -110,6 +112,8 @@ export function createApp(options: AppOptions): App {
   let settle: NodeJS.Timeout | null = null
   /** Set when the last read failed; cleared by the next one that succeeds. */
   let failure: string | null = null
+  /** Non-null while the outline overlay is open, holding the selected index. */
+  let outline: { selected: number } | null = null
   let loading: Promise<void> = Promise.resolve()
 
   const colour = (): boolean => supportsColour(env, tty.isTTY)
@@ -135,7 +139,7 @@ export function createApp(options: AppOptions): App {
     const end = Math.min(view.total, view.top + view.height)
     const percent = view.total === 0 ? 100 : Math.round((end / view.total) * 100)
     const left = ` ${percent}%`
-    const right = 'q quit  j/k scroll  g/G ends '
+    const right = outline === null ? 'q quit  j/k scroll  o outline ' : 'enter open  esc close '
     const pad = ' '.repeat(
       Math.max(1, columns() - displayWidth(left) - displayWidth(right))
     )
@@ -154,9 +158,14 @@ export function createApp(options: AppOptions): App {
         ? []
         : [style(truncate(`! ${failure}`, columns()), 'bold', { enabled: colour() })]
     const height = Math.max(1, bodyHeight() - banner.length)
-    const body = lines
-      .slice(view.top, view.top + height)
-      .map((l) => truncate(l.text, columns()))
+    const body =
+      outline === null
+        ? lines.slice(view.top, view.top + height).map((l) => truncate(l.text, columns()))
+        : outlineLines(buildOutline(lines), outline.selected, {
+            width: columns(),
+            unicode: supportsUnicode(env),
+            colour: colour(),
+          }).slice(0, height)
     // Pad to a full pane so a shorter document does not leave the previous
     // frame's lines behind it.
     while (body.length < height) body.push('')
@@ -173,7 +182,7 @@ export function createApp(options: AppOptions): App {
     // and keep the distance from it, so a reader deep inside a section stays
     // there instead of being pulled back to its heading.
     const anchor = anchorAt(lines, view.top)
-    const from = anchor === null ? -1 : lines.findIndex((l) => l.headingId === anchor)
+    const from = anchor === null ? -1 : lines.findIndex((l) => l.heading?.id === anchor)
     const offset = from === -1 ? 0 : view.top - from
 
     let markdown: string
@@ -220,6 +229,52 @@ export function createApp(options: AppOptions): App {
     draw()
   }
 
+  /**
+   * Keys while the outline is open.
+   *
+   * Returns true when the key belonged to the overlay, so the document's own
+   * bindings stay inert: `j` moving both the selection and the page would drop
+   * the reader somewhere they never chose.
+   */
+  const handleOutline = (k: Key, entries: OutlineEntry[]): boolean => {
+    if (outline === null) return false
+
+    if (k.name === 'escape' || (k.name === 'char' && k.value === 'o')) {
+      outline = null
+      draw()
+      return true
+    }
+
+    if (k.name === 'enter') {
+      const entry = entries[outline.selected]
+      outline = null
+      // The document may have been rewritten while the overlay was open, so the
+      // selected index can point past the end of the new outline.
+      if (entry !== undefined) view = scrollToLine(view, entry.line)
+      draw()
+      return true
+    }
+
+    const step =
+      k.name === 'down' || (k.name === 'char' && k.value === 'j')
+        ? 1
+        : k.name === 'up' || (k.name === 'char' && k.value === 'k')
+          ? -1
+          : 0
+    if (step !== 0) {
+      outline.selected = Math.min(
+        Math.max(0, entries.length - 1),
+        Math.max(0, outline.selected + step)
+      )
+      draw()
+      return true
+    }
+
+    // Anything else is swallowed rather than passed through: an overlay that
+    // lets G scroll the document behind it is just confusing.
+    return true
+  }
+
   const handle = (k: Key): void => {
     if (k.name === 'ctrl-c') {
       stop()
@@ -230,6 +285,8 @@ export function createApp(options: AppOptions): App {
       stop()
       return
     }
+    // Checked after quit so an overlay can never trap the reader.
+    if (handleOutline(k, buildOutline(lines))) return
     if (k.name === 'up') return move(scrollBy(view, -1))
     if (k.name === 'down') return move(scrollBy(view, 1))
     if (k.name === 'pageup') return move(pageBy(view, -1))
@@ -250,6 +307,10 @@ export function createApp(options: AppOptions): App {
         return move(toTop(view))
       case 'G':
         return move(toBottom(view))
+      case 'o':
+        outline = { selected: 0 }
+        draw()
+        return
       case 'r':
         return reload()
       default:

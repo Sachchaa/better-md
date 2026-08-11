@@ -30,7 +30,12 @@ describe('headings', () => {
 
   it('tags heading lines with an id so the outline can jump to them', () => {
     const lines = renderDocument(parseBlocks('# One\n\n## Two'), plain)
-    expect(lines.filter((l) => l.headingId !== undefined)).toHaveLength(2)
+    expect(lines.find((l) => l.heading !== undefined)?.heading).toEqual({
+      id: 'one',
+      level: 1,
+      text: 'One',
+    })
+    expect(lines.filter((l) => l.heading !== undefined)).toHaveLength(2)
   })
 })
 

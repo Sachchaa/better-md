@@ -56,9 +56,9 @@ describe('scrolling', () => {
 
 describe('anchoring across a reload', () => {
   const lines = [
-    { text: 'Goal', headingId: 'goal' },
+    { text: 'Goal', heading: { id: 'goal', level: 1, text: 'Goal' } },
     { text: 'body' },
-    { text: 'Tasks', headingId: 'tasks' },
+    { text: 'Tasks', heading: { id: 'tasks', level: 2, text: 'Tasks' } },
     { text: 'body' },
   ]
 
