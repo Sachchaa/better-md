@@ -13,7 +13,11 @@ const DOWN = `${ESC}[B`
 const ANSI = /\x1b\[[0-9;?]*[a-zA-Z]/g
 const stripAnsi = (s: string): string => s.replace(ANSI, '')
 
-function harness(markdown = '# Title\n\nbody', rows = 24) {
+function harness(
+  markdown = '# Title\n\nbody',
+  rows = 24,
+  env: NodeJS.ProcessEnv = { TERM: 'xterm-256color', LANG: 'en_US.UTF-8' }
+) {
   const written: string[] = []
   const resizeListeners: Array<() => void> = []
   const input = new EventEmitter() as EventEmitter & {
@@ -22,6 +26,12 @@ function harness(markdown = '# Title\n\nbody', rows = 24) {
   }
   const paused = vi.fn()
   const onInterrupt = vi.fn()
+  let editError: Error | null = null
+  let editHold: (() => void) | null = null
+  const edit = vi.fn(async (): Promise<void> => {
+    if (editHold !== null) await new Promise<void>((r) => (editHold = r))
+    if (editError !== null) throw editError
+  })
   let raw: boolean | null = null
   input.setRawMode = (on) => {
     raw = on
@@ -49,8 +59,9 @@ function harness(markdown = '# Title\n\nbody', rows = 24) {
       off: () => {},
     },
     input,
-    env: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8' },
+    env,
     onInterrupt,
+    edit,
   })
 
   return {
@@ -71,6 +82,22 @@ function harness(markdown = '# Title\n\nbody', rows = 24) {
       content = next
       error = null
       onChange()
+    },
+    edit,
+    /** Make the editor write to the file before it exits. */
+    editWrites: (next: string) => {
+      content = next
+    },
+    editFails: (err: Error) => {
+      editError = err
+    },
+    /** Keep the editor open until releaseEdit is called. */
+    holdEdit: () => {
+      editHold = () => {}
+    },
+    releaseEdit: () => {
+      if (typeof editHold === 'function') editHold()
+      editHold = null
     },
     /** Make the next read reject, as a deleted or unreadable file does. */
     fail: (err: Error) => {
@@ -639,6 +666,115 @@ describe('createApp', () => {
       await h.reloaded(() => h.change('# Small\n\nno needles here'))
       h.press('n')
       expect(h.frame()).toContain('Small')
+      h.app.stop()
+    })
+  })
+
+  describe('the external editor', () => {
+    it('hands the terminal over and takes it back', async () => {
+      // The editor needs the real terminal: cooked mode, cursor visible, and out
+      // of the alt screen. Leaving any of those set makes the editor unusable.
+      const h = harness('# Before', 24, { VISUAL: 'nvim' })
+      await h.app.start()
+      h.press('e')
+      await vi.waitFor(() => expect(h.edit.mock.calls.length).toBe(1))
+      const order = h.written.join('')
+      const handover = order.lastIndexOf(ALT_SCREEN_OFF)
+      const takeback = order.lastIndexOf(ALT_SCREEN_ON)
+      expect(handover).toBeGreaterThan(0)
+      expect(takeback).toBeGreaterThan(handover)
+      expect(h.rawMode()).toBe(true)
+      h.app.stop()
+    })
+
+    it('opens the file that is on screen', async () => {
+      const h = harness('# Before', 24, { EDITOR: 'vi' })
+      await h.app.start()
+      h.press('e')
+      await vi.waitFor(() => expect(h.edit.mock.calls.length).toBe(1))
+      expect(h.edit.mock.calls[0]).toEqual(['/plans/a.md', 'vi'])
+      h.app.stop()
+    })
+
+    it('re-reads the file afterwards, since the point was to change it', async () => {
+      const h = harness('# Before', 24, { EDITOR: 'vi' })
+      await h.app.start()
+      h.editWrites('# After')
+      h.press('e')
+      await vi.waitFor(() => expect(h.frame()).toContain('After'))
+      h.app.stop()
+    })
+
+    it('says what to set when no editor is configured, and spawns nothing', async () => {
+      const h = harness('# Before', 24, {})
+      await h.app.start()
+      h.press('e')
+      expect(h.frame()).toContain('No editor configured')
+      expect(h.frame()).toContain('EDITOR')
+      expect(h.edit).not.toHaveBeenCalled()
+      h.app.stop()
+    })
+
+    it('recovers the viewer when the editor cannot be started', async () => {
+      // A typo in $EDITOR must not leave the reader in a half-restored terminal
+      // with no viewer and no editor.
+      const h = harness('# Before', 24, { EDITOR: 'nosuchthing' })
+      await h.app.start()
+      h.editFails(new Error('could not start nosuchthing'))
+      h.press('e')
+      await vi.waitFor(() => expect(h.frame()).toContain('nosuchthing'))
+      // Back in the viewer: still drawing, still in raw mode.
+      expect(h.frame()).toContain('Before')
+      expect(h.rawMode()).toBe(true)
+      h.app.stop()
+    })
+
+    it('does not tear the terminal down under the editor', async () => {
+      // stdin is paused while the editor runs, but a chunk already in flight can
+      // still carry q. Quitting then would restore the terminal out from under
+      // an editor that is still drawing into it.
+      const h = harness(long, 24, { EDITOR: 'vi' })
+      await h.app.start()
+      h.holdEdit()
+      h.press('e')
+      await vi.waitFor(() => expect(h.edit.mock.calls.length).toBe(1))
+      const handedOver = h.written.length
+      h.press('q')
+      expect(h.written.length).toBe(handedOver)
+      h.releaseEdit()
+      // The viewer comes back rather than having quit behind the editor's back.
+      await vi.waitFor(() => expect(h.frame()).toContain('item-000'))
+      h.app.stop()
+    })
+
+    it('does not repaint on a resize while the editor is open', async () => {
+      // A window resize fires whether or not the editor owns the screen. Drawing
+      // then corrupts what the reader is working in.
+      const h = harness(long, 24, { EDITOR: 'vi' })
+      await h.app.start()
+      h.holdEdit()
+      h.press('e')
+      await vi.waitFor(() => expect(h.edit.mock.calls.length).toBe(1))
+      const handedOver = h.written.length
+      h.resize()
+      expect(h.written.length).toBe(handedOver)
+      h.releaseEdit()
+      h.app.stop()
+    })
+
+    it('ignores keys typed while the editor holds the terminal', async () => {
+      // Whatever the reader types belongs to the editor, and stdin is theirs.
+      // Acting on it would scroll a document nobody can see.
+      const h = harness(long, 24, { EDITOR: 'vi' })
+      await h.app.start()
+      h.holdEdit()
+      h.press('e')
+      await vi.waitFor(() => expect(h.edit.mock.calls.length).toBe(1))
+      const during = h.written.length
+      h.press('G')
+      h.press('j')
+      expect(h.written.length).toBe(during)
+      h.releaseEdit()
       h.app.stop()
     })
   })

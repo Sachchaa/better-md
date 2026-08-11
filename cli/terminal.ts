@@ -5,10 +5,13 @@
  * The process-level wiring lives here rather than in `terminal/app.ts` so the app
  * itself stays free of global state and its tests need no cleanup.
  */
+import { spawn } from 'node:child_process'
 import { parseBlocks } from './blocks.js'
 import { supportsUnicode } from './terminal/ansi.js'
 import { createApp, type Tty } from './terminal/app.js'
+import { openInEditor } from './terminal/editor.js'
 import { renderDocument } from './terminal/render.js'
+import { join } from 'node:path'
 import type { WorkspaceDescriptor } from './types.js'
 import { watchWorkspace } from './watch.js'
 import { Workspace } from './workspace.js'
@@ -62,7 +65,9 @@ export async function runTerminal(descriptor: WorkspaceDescriptor): Promise<void
   }
 
   const app = createApp({
-    file: descriptor.active,
+    // The absolute path: the header shows its basename, and the editor inherits
+    // this process's cwd, so a bare filename would only work by luck.
+    file: join(workspace.root, descriptor.active),
     read,
     watch: (onChange) =>
       // The watcher reports every document in the directory; only the open one
@@ -80,6 +85,7 @@ export async function runTerminal(descriptor: WorkspaceDescriptor): Promise<void
     // 130 is the conventional status for interrupted-by-Ctrl-C. Quitting with q
     // is not an interruption, so it drains normally and exits 0.
     onInterrupt: () => process.exit(130),
+    edit: (file, editor) => openInEditor(file, editor, spawn),
   })
 
   // Registered before start so a crash between here and the first draw still

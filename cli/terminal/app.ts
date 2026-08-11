@@ -20,6 +20,7 @@ import {
   supportsColour,
   supportsUnicode,
 } from './ansi.js'
+import { EDITOR_HELP, resolveEditor } from './editor.js'
 import { decodeKeys, type Key } from './keys.js'
 import { buildOutline, outlineLines, type OutlineEntry } from './outline.js'
 import { findMatches, highlight, stepMatch, type Match } from './search.js'
@@ -59,6 +60,13 @@ export interface AppOptions {
    * interrupt and 0 for a deliberate quit.
    */
   onInterrupt?: () => void
+  /**
+   * Run the reader's editor on the file and resolve when it closes.
+   *
+   * Injected so the app never spawns anything itself: the tests drive the whole
+   * hand-over-and-take-back sequence without a real editor.
+   */
+  edit?: (file: string, editor: string) => Promise<void>
   input: NodeJS.EventEmitter & {
     setRawMode?(on: boolean): void
     /**
@@ -113,6 +121,16 @@ export function createApp(options: AppOptions): App {
   let settle: NodeJS.Timeout | null = null
   /** Set when the last read failed; cleared by the next one that succeeds. */
   let failure: string | null = null
+  /**
+   * A message for the reader, shown above the document until a key dismisses it.
+   *
+   * Separate from `failure`, which describes the *file*: a successful read clears
+   * a read error, and an editor that could not start would otherwise have its
+   * message wiped by the re-read that follows.
+   */
+  let notice: string | null = null
+  /** True while an external editor owns the terminal. */
+  let editing = false
   /** Non-null while the outline overlay is open, holding the selected index. */
   let outline: { selected: number } | null = null
   /**
@@ -166,12 +184,20 @@ export function createApp(options: AppOptions): App {
     // over the shell after it has been handed back: keypresses buffered behind
     // the quit key, a resize mid-shutdown, and a reload landing late all end up
     // here.
-    if (stopped) return
+    // Nothing is drawn while an external editor owns the screen: a frame painted
+    // over an open editor corrupts what the reader is working in.
+    if (stopped || editing) return
 
-    const banner =
-      failure === null
+    const banner = [
+      ...(notice === null
         ? []
-        : [style(truncate(`! ${failure}`, columns()), 'bold', { enabled: colour() })]
+        : notice
+            .split('\n')
+            .map((l) => style(truncate(l, columns()), 'bold', { enabled: colour() }))),
+      ...(failure === null
+        ? []
+        : [style(truncate(`! ${failure}`, columns()), 'bold', { enabled: colour() })]),
+    ]
     const height = Math.max(1, bodyHeight() - banner.length)
     const body =
       outline === null
@@ -252,6 +278,49 @@ export function createApp(options: AppOptions): App {
   /** Serialised: two overlapping reads would race to set `lines`. */
   const reload = (): void => {
     loading = loading.then(load, load)
+  }
+
+  /**
+   * Hand the terminal to the reader's editor, then take it back.
+   *
+   * The editor needs the terminal as it found it — cooked mode, cursor visible,
+   * off the alt screen — and the viewer needs all three back afterwards. The
+   * file is re-read on return because changing it was the point.
+   */
+  const runEditor = async (): Promise<void> => {
+    const editor = resolveEditor(env)
+    if (editor === null) {
+      // No guessing: spawning whatever is installed drops the reader into an
+      // editor they did not choose and may not know how to leave.
+      notice = EDITOR_HELP
+      draw()
+      return
+    }
+    if (options.edit === undefined) return
+
+    editing = true
+    input.setRawMode?.(false)
+    input.pause?.()
+    tty.write(CURSOR_SHOW + ALT_SCREEN_OFF)
+
+    try {
+      await options.edit(options.file, editor)
+      notice = null
+    } catch (err) {
+      // A typo in $EDITOR must not leave the reader with no viewer and no
+      // editor, so the message lands in the viewer rather than the void. As a
+      // notice, not a failure: the re-read below would clear a failure.
+      notice = err instanceof Error ? err.message : String(err)
+    } finally {
+      editing = false
+      if (!stopped) {
+        tty.write(ALT_SCREEN_ON + CURSOR_HIDE)
+        input.setRawMode?.(true)
+        input.resume?.()
+      }
+    }
+
+    reload()
   }
 
   const move = (next: Viewport): void => {
@@ -366,6 +435,13 @@ export function createApp(options: AppOptions): App {
       stop()
       return
     }
+    if (notice !== null) {
+      // Any key dismisses the message, and does nothing else: the reader was
+      // reading, not navigating, so acting on the same key would surprise them.
+      notice = null
+      draw()
+      return
+    }
     // Both checked after quit, so neither can trap the reader.
     if (handleTyping(k)) return
     if (handleOutline(k, buildOutline(lines))) return
@@ -414,6 +490,9 @@ export function createApp(options: AppOptions): App {
         research()
         search.current = stepMatch(search.matches, search.current, -1)
         return showMatch()
+      case 'e':
+        void runEditor()
+        return
       case 'r':
         return reload()
       default:
@@ -427,6 +506,10 @@ export function createApp(options: AppOptions): App {
     input.resume?.()
 
     onData = (data) => {
+      // Whatever is typed while an editor holds the terminal belongs to the
+      // editor. stdin is paused then, but a chunk already in flight would
+      // otherwise scroll a document nobody can see.
+      if (editing) return
       // One chunk can carry the quit key and whatever was typed behind it;
       // `draw` refuses to paint once stopped, so the tail is inert.
       for (const key of decodeKeys(data.toString())) handle(key)
