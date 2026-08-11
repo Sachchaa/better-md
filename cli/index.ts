@@ -29,7 +29,25 @@ function packagedExecutable(): string | null {
   return sea.isSea() ? process.execPath : null
 }
 
+/**
+ * A closed stdout is not an error.
+ *
+ * `better-md plan.md -t | head` and quitting a pager early both close the read
+ * end mid-write. Node surfaces that as an unhandled 'error' on stdout, which
+ * prints a stack trace over whatever the user was actually reading. Nothing this
+ * CLI writes to stdout matters more than the reader that went away.
+ *
+ * Only EPIPE is swallowed; a real write failure still surfaces.
+ */
+function ignoreBrokenPipe(): void {
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') process.exit(0)
+    throw err
+  })
+}
+
 async function main(): Promise<void> {
+  ignoreBrokenPipe()
   const options = parseCliArgs(process.argv.slice(2))
 
   if (options.checkUpdates) {

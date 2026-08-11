@@ -479,6 +479,16 @@
       .flow .g {
         color: var(--accent);
       }
+      /* The rendered document inside the terminal sample. Named like .c and .g
+         above rather than .doc, which is the browser editor's own surface and
+         carries padding and a larger font. */
+      .flow .d {
+        color: var(--paper);
+        font-weight: 600;
+      }
+      .flow .r {
+        color: #4a5257;
+      }
 
       .shot {
         margin: 30px 0 0;
@@ -810,6 +820,68 @@ $ better-md --plan
           />
           <figcaption>The editor, serving a real plan from disk on 127.0.0.1</figcaption>
         </figure>
+      </section>
+
+      <section id="terminal">
+        <p class="eyebrow">$EDITOR · no server</p>
+        <h2>Or stay in the terminal.</h2>
+        <p class="say">
+          <code class="inline">-t</code> renders the plan where you already are. Same file
+          resolution, same live reload, no server and no browser — and when you do want to
+          change something, one key hands the file to your editor and another opens the
+          browser editor.
+        </p>
+
+        <pre class="flow">
+<span class="c">$ better-md --plan -t</span>
+
+<span class="d">Auth Plan</span>
+<span class="r">═════════</span>
+
+<span class="d">Goal</span>
+<span class="r">────</span>
+
+Ship password login behind a flag.
+
+<span class="g">✓</span> schema migration
+<span class="g">✓</span> session store
+<span class="c">○</span> rate limiting
+<span class="c">○</span> audit log</pre>
+
+        <div class="grid">
+          <div class="cell">
+            <span class="num">live</span>
+            <h3>Keeps your place</h3>
+            <p>
+              The pane updates as the agent rewrites the plan, and holds the spot you were
+              reading inside a section rather than jumping back to the top.
+            </p>
+          </div>
+          <div class="cell">
+            <span class="num">/ and o</span>
+            <h3>Search and outline</h3>
+            <p>
+              <code class="inline">/</code> finds text literally, so
+              <code class="inline">plan.md</code> never matches <code class="inline">planXmd</code>.
+              <code class="inline">o</code> lists the headings to jump between.
+            </p>
+          </div>
+          <div class="cell">
+            <span class="num">e and b</span>
+            <h3>Leave when you need to</h3>
+            <p>
+              <code class="inline">e</code> opens the file in <code class="inline">$EDITOR</code>;
+              <code class="inline">b</code> opens the browser editor, reusing the server if one is
+              already running.
+            </p>
+          </div>
+        </div>
+
+        <p class="beneath">
+          Piping prints plain text and exits, so <code class="inline">-t plan.md | less</code> and
+          <code class="inline">&gt; plan.txt</code> both work. There is no editing in the terminal
+          itself, and code blocks are shown verbatim rather than reflowed.
+        </p>
       </section>
 
       <section id="workflow">

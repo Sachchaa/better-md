@@ -86,6 +86,55 @@ try {
   })
   check('--help names the program', helpText.includes('better-md'), helpText.split('\n')[0])
 
+  // --- terminal mode, one-shot ---------------------------------------------
+  // A long plan rendered to a pipe, with the reader closing it immediately.
+  // `better-md plan.md -t | less` and quitting less early is exactly this, and it
+  // used to print a Node stack trace: the unhandled EPIPE on stdout.
+  {
+    // Its own directory: added to `ws` it would change which file the server
+    // reports as active, and the workspace listing check asserts that exactly.
+    const pipeDir = path.join(base, 'pipe')
+    await fs.mkdir(pipeDir, { recursive: true })
+    const long = path.join(pipeDir, 'long-plan.md')
+    await fs.writeFile(
+      long,
+      Array.from(
+        { length: 4000 },
+        (_, i) =>
+          `## Section ${i}\n\nBody text for section ${i}, long enough to wrap when rendered.\n\n- [x] done\n- [ ] todo`
+      ).join('\n\n'),
+      'utf8'
+    )
+
+    const piped = spawn(binary, ['--terminal', long], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const closedEarly = await new Promise((resolve) => {
+      let err = ''
+      let firstLine = ''
+      piped.stderr.on('data', (d) => (err += d.toString('utf8')))
+      piped.stdout.once('data', (d) => {
+        firstLine = d.toString('utf8').split('\n')[0]
+        // Destroying the read end is what `head` and a quit pager both do.
+        piped.stdout.destroy()
+      })
+      piped.on('exit', (code) => resolve({ err, code, firstLine }))
+    })
+    check(
+      'terminal mode renders to a pipe',
+      closedEarly.firstLine.includes('Section 0'),
+      closedEarly.firstLine
+    )
+    check(
+      'a closed pipe is not an error',
+      closedEarly.err === '',
+      closedEarly.err.split('\n')[0] || '(clean)'
+    )
+    check(
+      'exits cleanly when the reader goes away',
+      closedEarly.code === 0,
+      `exit ${closedEarly.code}`
+    )
+  }
+
   /** Run the binary to completion, capturing the streams separately. */
   function capture(args) {
     const c = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] })
