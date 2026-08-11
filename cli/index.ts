@@ -1,24 +1,18 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import sea from 'node:sea'
 import { InfoRequest, parseCliArgs, UsageError } from './args.js'
 import { ASSETS } from './assets.generated.js'
+import { runDetached } from './detach.js'
 import { openBrowser } from './open.js'
 import { programName } from './programName.js'
 import { ResolveError, resolveWorkspace } from './resolve.js'
 import { startServer } from './server.js'
+import { runTerminal } from './terminal.js'
 import { checkForUpdate, describeCheck, selfUpdate, UpdateError } from './update.js'
 import { initClaude, InitError } from './initAgent.js'
-import {
-  readSession,
-  removeSession,
-  removeSessionSync,
-  sessionFile,
-  sessionIsLive,
-  writeSession,
-} from './session.js'
+import { removeSessionSync, sessionFile, writeSession } from './session.js'
 import { uninstall, UninstallError } from './uninstall.js'
 import { VERSION } from './version.generated.js'
 import { watchWorkspace } from './watch.js'
@@ -94,10 +88,22 @@ async function main(): Promise<void> {
   const descriptor = await resolveWorkspace(options)
   const workspace = new Workspace(descriptor)
 
+  // Before the session file and the server: terminal mode starts neither, so it
+  // must not leave a session record behind or require the embedded bundle.
+  if (options.terminal) {
+    await runTerminal(descriptor, packagedExecutable() !== null)
+    return
+  }
+
   const session = sessionFile(os.homedir(), descriptor.root)
 
   if (options.detach) {
-    await runDetached(session, options.open)
+    await runDetached({
+      session,
+      open: options.open,
+      packaged: packagedExecutable() !== null,
+      announce: (url) => process.stdout.write(`${url}\n`),
+    })
     return
   }
 
@@ -163,47 +169,6 @@ async function main(): Promise<void> {
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
-}
-
-/**
- * Reuse a live server for this workspace, or start one in the background.
- *
- * Reuse matters because the intended caller is a hook that fires on every
- * finished plan: without it, each plan would leave another ~110 MB server
- * running. Liveness is proven by an authenticated request rather than a pid
- * check — ports and pids both get recycled.
- */
-async function runDetached(session: string, open: boolean): Promise<void> {
-  const existing = await readSession(session)
-  if (existing !== null && (await sessionIsLive(existing))) {
-    process.stdout.write(`${existing.url}\n`)
-    if (open) openBrowser(existing.url)
-    return
-  }
-  await removeSession(session)
-
-  // Re-spawn self without --detach. stdio is ignored and the child unref'd, so
-  // this process can exit without killing it or leaving it writing to a dead
-  // pipe; the session file is the handshake instead.
-  const args = process.argv.slice(2).filter((a) => a !== '--detach')
-  const child = spawn(process.execPath, sea.isSea() ? args : [process.argv[1], ...args], {
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, BETTER_MD_SESSION: session },
-  })
-  child.unref()
-
-  const deadline = Date.now() + 15_000
-  while (Date.now() < deadline) {
-    const record = await readSession(session)
-    if (record !== null && (await sessionIsLive(record))) {
-      process.stdout.write(`${record.url}\n`)
-      if (open) openBrowser(record.url)
-      return
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150))
-  }
-  throw new ResolveError('the background server did not start within 15s')
 }
 
 main().catch((err: unknown) => {

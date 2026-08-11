@@ -17,6 +17,8 @@ export interface CliOptions {
   agent: string | null
   /** Start the server, print the URL and return, instead of holding the terminal. */
   detach: boolean
+  /** Render in the terminal instead of serving the browser editor. */
+  terminal: boolean
   /** A subcommand that replaces the normal "open a workspace" run. */
   command: 'update' | 'uninstall' | 'init' | null
   /** Which agent `init` should configure. */
