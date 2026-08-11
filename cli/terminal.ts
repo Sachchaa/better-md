@@ -6,7 +6,10 @@
  * itself stays free of global state and its tests need no cleanup.
  */
 import { spawn } from 'node:child_process'
+import os from 'node:os'
 import { parseBlocks } from './blocks.js'
+import { runDetached } from './detach.js'
+import { sessionFile } from './session.js'
 import { supportsUnicode } from './terminal/ansi.js'
 import { createApp, type Tty } from './terminal/app.js'
 import { openInEditor } from './terminal/editor.js'
@@ -53,7 +56,10 @@ export function renderOnce(
   return `${lines.map((l) => l.text).join('\n')}\n`
 }
 
-export async function runTerminal(descriptor: WorkspaceDescriptor): Promise<void> {
+export async function runTerminal(
+  descriptor: WorkspaceDescriptor,
+  packaged: boolean
+): Promise<void> {
   const workspace = new Workspace(descriptor)
   // Through Workspace, so terminal mode cannot read a file browser mode would
   // refuse. One set of path rules, not two.
@@ -86,6 +92,21 @@ export async function runTerminal(descriptor: WorkspaceDescriptor): Promise<void
     // is not an interruption, so it drains normally and exits 0.
     onInterrupt: () => process.exit(130),
     edit: (file, editor) => openInEditor(file, editor, spawn),
+    // The same path `--detach` and `init claude` use: it reuses a server already
+    // serving this workspace and starts one only if none is, so terminal mode
+    // introduces no server lifecycle of its own. Pressing `b` twice opens one
+    // server, not two.
+    //
+    // `announce` is deliberately omitted: this process owns the screen, and a
+    // URL written to stdout would land in the middle of the rendered document.
+    openBrowser: async () => {
+      await runDetached({
+        session: sessionFile(os.homedir(), workspace.root),
+        // Always opens, even under --no-open: pressing `b` is an explicit ask.
+        open: true,
+        packaged,
+      })
+    },
   })
 
   // Registered before start so a crash between here and the first draw still

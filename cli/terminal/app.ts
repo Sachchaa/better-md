@@ -67,6 +67,13 @@ export interface AppOptions {
    * hand-over-and-take-back sequence without a real editor.
    */
   edit?: (file: string, editor: string) => Promise<void>
+  /**
+   * Open this workspace in the browser editor and resolve once it is up.
+   *
+   * Injected so the app owns no server lifecycle: the caller reuses whatever is
+   * already serving this workspace and starts one only if nothing is.
+   */
+  openBrowser?: () => Promise<void>
   input: NodeJS.EventEmitter & {
     setRawMode?(on: boolean): void
     /**
@@ -131,6 +138,8 @@ export function createApp(options: AppOptions): App {
   let notice: string | null = null
   /** True while an external editor owns the terminal. */
   let editing = false
+  /** True while a browser handoff is in flight, so a second press is ignored. */
+  let opening = false
   /** Non-null while the outline overlay is open, holding the selected index. */
   let outline: { selected: number } | null = null
   /**
@@ -323,6 +332,30 @@ export function createApp(options: AppOptions): App {
     reload()
   }
 
+  /**
+   * Hand off to the browser editor without leaving the terminal.
+   *
+   * Starting a server takes a moment, so the wait is announced — an unlabelled
+   * pause makes the key look broken. Overlapping presses are dropped rather than
+   * queued: two presses must not mean two servers.
+   */
+  const runBrowser = async (): Promise<void> => {
+    if (opening || options.openBrowser === undefined) return
+    opening = true
+    notice = 'Opening browser editor…'
+    draw()
+    try {
+      await options.openBrowser()
+      notice = null
+    } catch (err) {
+      // A failed handoff must not look like a successful one.
+      notice = err instanceof Error ? err.message : String(err)
+    } finally {
+      opening = false
+      draw()
+    }
+  }
+
   const move = (next: Viewport): void => {
     view = next
     draw()
@@ -466,7 +499,9 @@ export function createApp(options: AppOptions): App {
       case ' ':
       case 'f':
         return move(pageBy(view, 1))
-      case 'b':
+      // `u`, not the pager-conventional `b`, which this viewer spends on the
+      // browser handoff. PgUp does the same thing for anyone reaching for it.
+      case 'u':
         return move(pageBy(view, -1))
       case 'g':
         return move(toTop(view))
@@ -490,6 +525,9 @@ export function createApp(options: AppOptions): App {
         research()
         search.current = stepMatch(search.matches, search.current, -1)
         return showMatch()
+      case 'b':
+        void runBrowser()
+        return
       case 'e':
         void runEditor()
         return

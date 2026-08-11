@@ -32,6 +32,12 @@ function harness(
     if (editHold !== null) await new Promise<void>((r) => (editHold = r))
     if (editError !== null) throw editError
   })
+  let browserError: Error | null = null
+  let browserHold: (() => void) | null = null
+  const openBrowser = vi.fn(async (): Promise<void> => {
+    if (browserHold !== null) await new Promise<void>((r) => (browserHold = r))
+    if (browserError !== null) throw browserError
+  })
   let raw: boolean | null = null
   input.setRawMode = (on) => {
     raw = on
@@ -62,6 +68,7 @@ function harness(
     env,
     onInterrupt,
     edit,
+    openBrowser,
   })
 
   return {
@@ -98,6 +105,17 @@ function harness(
     releaseEdit: () => {
       if (typeof editHold === 'function') editHold()
       editHold = null
+    },
+    openBrowser,
+    browserFails: (err: Error) => {
+      browserError = err
+    },
+    holdBrowser: () => {
+      browserHold = () => {}
+    },
+    releaseBrowser: () => {
+      if (typeof browserHold === 'function') browserHold()
+      browserHold = null
     },
     /** Make the next read reject, as a deleted or unreadable file does. */
     fail: (err: Error) => {
@@ -369,6 +387,27 @@ describe('createApp', () => {
       expect(h.frame()).toContain('item-119')
       h.press('g')
       expect(h.frame()).toContain('item-000')
+      h.app.stop()
+    })
+
+    it('pages back with u, since b is the browser handoff', async () => {
+      const h = harness(long)
+      await h.app.start()
+      h.press('G')
+      const bottom = h.frame()
+      h.press('u')
+      expect(h.frame()).not.toBe(bottom)
+      expect(h.frame()).not.toContain('item-119')
+      h.app.stop()
+    })
+
+    it('pages back with page-up too', async () => {
+      const h = harness(long)
+      await h.app.start()
+      h.press('G')
+      const bottom = h.frame()
+      h.press(`${ESC}[5~`)
+      expect(h.frame()).not.toBe(bottom)
       h.app.stop()
     })
 
@@ -775,6 +814,66 @@ describe('createApp', () => {
       h.press('j')
       expect(h.written.length).toBe(during)
       h.releaseEdit()
+      h.app.stop()
+    })
+  })
+
+  describe('the browser handoff', () => {
+    it('opens the browser once per press and keeps the viewer running', async () => {
+      const h = harness('# Plan')
+      await h.app.start()
+      h.press('b')
+      await vi.waitFor(() => expect(h.openBrowser.mock.calls.length).toBe(1))
+      // Still a viewer: the terminal is not handed back and the document is still
+      // on screen.
+      expect(h.frame()).toContain('Plan')
+      expect(h.rawMode()).toBe(true)
+      h.app.stop()
+    })
+
+    it('reports what it is doing while the server starts', async () => {
+      // Starting a server takes a moment. Without a word the key looks broken.
+      const h = harness('# Plan')
+      await h.app.start()
+      h.holdBrowser()
+      h.press('b')
+      await vi.waitFor(() => expect(h.frame()).toContain('Opening browser'))
+      h.releaseBrowser()
+      h.app.stop()
+    })
+
+    it('clears the message once the browser is open', async () => {
+      const h = harness('# Plan')
+      await h.app.start()
+      h.press('b')
+      await vi.waitFor(() => expect(h.openBrowser.mock.calls.length).toBe(1))
+      await vi.waitFor(() => expect(h.frame()).not.toContain('Opening browser'))
+      h.app.stop()
+    })
+
+    it('says so when the browser could not be opened', async () => {
+      // A failed handoff must not look like a successful one.
+      const h = harness('# Plan')
+      await h.app.start()
+      h.browserFails(new Error('the background server did not start within 15s'))
+      h.press('b')
+      await vi.waitFor(() => expect(h.frame()).toContain('did not start'))
+      expect(h.frame()).toContain('Plan')
+      h.app.stop()
+    })
+
+    it('does not start a second handoff while one is in flight', async () => {
+      // Two presses must not mean two servers. The second is ignored until the
+      // first settles.
+      const h = harness('# Plan')
+      await h.app.start()
+      h.holdBrowser()
+      h.press('b')
+      h.press('b')
+      h.press('b')
+      h.releaseBrowser()
+      await vi.waitFor(() => expect(h.frame()).not.toContain('Opening browser'))
+      expect(h.openBrowser).toHaveBeenCalledTimes(1)
       h.app.stop()
     })
   })
