@@ -48,7 +48,26 @@ export interface AppOptions {
   read: () => Promise<string>
   watch: (onChange: () => void) => () => void
   tty: Tty
-  input: NodeJS.EventEmitter & { setRawMode?(on: boolean): void }
+  /**
+   * Called when the reader interrupts with Ctrl-C, rather than quitting with q.
+   *
+   * In raw mode Ctrl-C arrives as byte 0x03, not as SIGINT, so nothing else can
+   * tell the two apart — and a script checking `$?` should see 130 for an
+   * interrupt and 0 for a deliberate quit.
+   */
+  onInterrupt?: () => void
+  input: NodeJS.EventEmitter & {
+    setRawMode?(on: boolean): void
+    /**
+     * Pausing on shutdown is what lets the process exit.
+     *
+     * Removing the last 'data' listener does not pause the stream, and a flowing
+     * stdin holds the event loop open forever: without this, `q` restored the
+     * terminal and then never gave the shell back.
+     */
+    pause?(): void
+    resume?(): void
+  }
   env: NodeJS.ProcessEnv
 }
 
@@ -69,6 +88,16 @@ const SETTLE_MS = 150
 /** Header and footer each take a row. */
 const CHROME_ROWS = 2
 
+/**
+ * Assumed size when the terminal reports none.
+ *
+ * `process.stdout.columns` and `.rows` are `undefined` whenever stdout is not a
+ * tty, despite the Node types declaring them `number`. Trusting the type gave
+ * NaN arithmetic: a blank pane and a footer reading "NaN%".
+ */
+const DEFAULT_COLUMNS = 80
+const DEFAULT_ROWS = 24
+
 export function createApp(options: AppOptions): App {
   const { tty, input, env } = options
 
@@ -79,18 +108,26 @@ export function createApp(options: AppOptions): App {
   let onResize: (() => void) | null = null
   let onData: ((data: Buffer | string) => void) | null = null
   let settle: NodeJS.Timeout | null = null
+  /** Set when the last read failed; cleared by the next one that succeeds. */
+  let failure: string | null = null
   let loading: Promise<void> = Promise.resolve()
 
   const colour = (): boolean => supportsColour(env, tty.isTTY)
 
-  const bodyHeight = (): number => Math.max(1, tty.rows - CHROME_ROWS)
+  const columns = (): number =>
+    Number.isFinite(tty.columns) && tty.columns > 0 ? tty.columns : DEFAULT_COLUMNS
+
+  const rows = (): number =>
+    Number.isFinite(tty.rows) && tty.rows > 0 ? tty.rows : DEFAULT_ROWS
+
+  const bodyHeight = (): number => Math.max(1, rows() - CHROME_ROWS)
 
   const chrome = (text: string): string =>
-    style(truncate(text, tty.columns), 'inverse', { enabled: colour() })
+    style(truncate(text, columns()), 'inverse', { enabled: colour() })
 
   const header = (): string => {
     const name = basename(options.file)
-    const pad = ' '.repeat(Math.max(0, tty.columns - displayWidth(name) - 1))
+    const pad = ' '.repeat(Math.max(0, columns() - displayWidth(name) - 1))
     return chrome(` ${name}${pad}`)
   }
 
@@ -100,7 +137,7 @@ export function createApp(options: AppOptions): App {
     const left = ` ${percent}%`
     const right = 'q quit  j/k scroll  g/G ends '
     const pad = ' '.repeat(
-      Math.max(1, tty.columns - displayWidth(left) - displayWidth(right))
+      Math.max(1, columns() - displayWidth(left) - displayWidth(right))
     )
     return chrome(`${left}${pad}${right}`)
   }
@@ -111,15 +148,22 @@ export function createApp(options: AppOptions): App {
     // the quit key, a resize mid-shutdown, and a reload landing late all end up
     // here.
     if (stopped) return
-    const height = bodyHeight()
+
+    const banner =
+      failure === null
+        ? []
+        : [style(truncate(`! ${failure}`, columns()), 'bold', { enabled: colour() })]
+    const height = Math.max(1, bodyHeight() - banner.length)
     const body = lines
       .slice(view.top, view.top + height)
-      .map((l) => truncate(l.text, tty.columns))
+      .map((l) => truncate(l.text, columns()))
     // Pad to a full pane so a shorter document does not leave the previous
     // frame's lines behind it.
     while (body.length < height) body.push('')
     tty.write(
-      CLEAR + moveTo(1, 1) + header() + '\r\n' + body.join('\r\n') + '\r\n' + footer()
+      CLEAR +
+        moveTo(1, 1) +
+        [header(), ...banner, ...body, footer()].join('\r\n')
     )
   }
 
@@ -132,10 +176,24 @@ export function createApp(options: AppOptions): App {
     const from = anchor === null ? -1 : lines.findIndex((l) => l.headingId === anchor)
     const offset = from === -1 ? 0 : view.top - from
 
-    const markdown = await options.read()
+    let markdown: string
+    try {
+      markdown = await options.read()
+    } catch (err) {
+      // An agent renaming or replacing a plan makes this read throw. Letting the
+      // rejection escape kills the process with the terminal still in the alt
+      // screen and raw mode on, which is the one failure a user cannot easily
+      // recover from. The last good document stays on screen under a banner
+      // saying why it is not current, and the watcher keeps running so the file
+      // coming back is picked up.
+      failure = err instanceof Error ? err.message : String(err)
+      draw()
+      return
+    }
+    failure = null
     if (stopped) return
     lines = renderDocument(parseBlocks(markdown), {
-      width: tty.columns,
+      width: columns(),
       unicode: supportsUnicode(env),
       colour: colour(),
     })
@@ -163,7 +221,12 @@ export function createApp(options: AppOptions): App {
   }
 
   const handle = (k: Key): void => {
-    if (k.name === 'ctrl-c' || (k.name === 'char' && k.value === 'q')) {
+    if (k.name === 'ctrl-c') {
+      stop()
+      options.onInterrupt?.()
+      return
+    }
+    if (k.name === 'char' && k.value === 'q') {
       stop()
       return
     }
@@ -197,6 +260,7 @@ export function createApp(options: AppOptions): App {
   const start = async (): Promise<void> => {
     tty.write(ALT_SCREEN_ON + CURSOR_HIDE)
     input.setRawMode?.(true)
+    input.resume?.()
 
     onData = (data) => {
       // One chunk can carry the quit key and whatever was typed behind it;
@@ -237,6 +301,10 @@ export function createApp(options: AppOptions): App {
     if (onData !== null) input.off('data', onData)
     if (onResize !== null) tty.off('resize', onResize)
     input.setRawMode?.(false)
+    // Removing the listener is not enough: a flowing stdin keeps the event loop
+    // alive, so the process would hold the shell forever after the terminal had
+    // already been handed back.
+    input.pause?.()
     tty.write(CURSOR_SHOW + ALT_SCREEN_OFF)
   }
 

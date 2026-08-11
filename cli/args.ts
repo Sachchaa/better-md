@@ -26,6 +26,7 @@ export function usage(name: string = programName()): string {
 Usage:
   ${name} --plan           your agent's plans, whichever wrote most recently
   ${name} <file.md>        a single file
+  ${name} <file.md> -t     read it in the terminal instead of the browser
   ${name} <directory>      every markdown file in a directory
   ${name} update           replace this binary with the latest release
   ${name} uninstall        remove better-md and its btr-md alias
@@ -34,6 +35,7 @@ Usage:
 Options:
   --agent <id>      which agent's plans --plan opens (claude, cursor)
   --detach          start in the background, print the URL and return
+  --terminal, -t    render in the terminal instead of opening a browser
   --write           let init modify the agent's config (default: preview only)
   --port <n>        listen on a specific port (default: 8080, or a free port if taken)
   --no-open         print the URL instead of opening a browser
@@ -72,6 +74,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     'check-updates'?: boolean
     agent?: string
     detach?: boolean
+    terminal?: boolean
     write?: boolean
   }
   let positionals: string[]
@@ -87,6 +90,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
         'check-updates': { type: 'boolean', default: false },
         agent: { type: 'string' },
         detach: { type: 'boolean', default: false },
+        terminal: { type: 'boolean', short: 't', default: false },
         write: { type: 'boolean', default: false },
       },
       allowPositionals: true,
@@ -139,6 +143,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
       open: false,
       agent: null,
       detach: false,
+      terminal: false,
       command,
       initTarget: which,
       write: values.write === true,
@@ -159,10 +164,25 @@ export function parseCliArgs(argv: string[]): CliOptions {
       open: false,
       agent: null,
       detach: false,
+      terminal: false,
       command,
       initTarget: null,
       write: false,
       checkUpdates,
+    }
+  }
+
+  const terminal = values.terminal === true
+  // Rejected rather than ignored: someone who passes --port believes a server
+  // will be listening on it, and terminal mode starts none. --no-open is
+  // deliberately not on this list — it asks for no browser, which is what
+  // terminal mode already does, so scripts can pass it unconditionally.
+  if (terminal) {
+    if (values.port !== undefined) {
+      throw new UsageError('--port has no meaning with --terminal, which starts no server')
+    }
+    if (values.detach === true) {
+      throw new UsageError('--detach has no meaning with --terminal, which starts no server')
     }
   }
 
@@ -189,6 +209,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     open: values['no-open'] !== true,
     agent,
     detach: values.detach === true,
+    terminal,
     command: null,
     initTarget: null,
     write: false,

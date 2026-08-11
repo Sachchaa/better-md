@@ -9,6 +9,7 @@ import { openBrowser } from './open.js'
 import { programName } from './programName.js'
 import { ResolveError, resolveWorkspace } from './resolve.js'
 import { startServer } from './server.js'
+import { runTerminal } from './terminal.js'
 import { checkForUpdate, describeCheck, selfUpdate, UpdateError } from './update.js'
 import { initClaude, InitError } from './initAgent.js'
 import {
@@ -93,6 +94,13 @@ async function main(): Promise<void> {
 
   const descriptor = await resolveWorkspace(options)
   const workspace = new Workspace(descriptor)
+
+  // Before the session file and the server: terminal mode starts neither, so it
+  // must not leave a session record behind or require the embedded bundle.
+  if (options.terminal) {
+    await runTerminal(descriptor)
+    return
+  }
 
   const session = sessionFile(os.homedir(), descriptor.root)
 

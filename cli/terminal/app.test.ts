@@ -9,14 +9,21 @@ const ESC = '\x1b'
 function harness(markdown = '# Title\n\nbody', rows = 24) {
   const written: string[] = []
   const resizeListeners: Array<() => void> = []
-  const input = new EventEmitter() as EventEmitter & { setRawMode?(on: boolean): void }
+  const input = new EventEmitter() as EventEmitter & {
+    setRawMode?(on: boolean): void
+    pause?(): void
+  }
+  const paused = vi.fn()
+  const onInterrupt = vi.fn()
   let raw: boolean | null = null
   input.setRawMode = (on) => {
     raw = on
   }
+  input.pause = paused
   const stopWatch = vi.fn()
-  const read = vi.fn(() => Promise.resolve(content))
+  const read = vi.fn(() => (error === null ? Promise.resolve(content) : Promise.reject(error)))
   let content = markdown
+  let error: Error | null = null
   let onChange: () => void = () => {}
 
   const app = createApp({
@@ -36,6 +43,7 @@ function harness(markdown = '# Title\n\nbody', rows = 24) {
     },
     input,
     env: { TERM: 'xterm-256color', LANG: 'en_US.UTF-8' },
+    onInterrupt,
   })
 
   return {
@@ -43,6 +51,8 @@ function harness(markdown = '# Title\n\nbody', rows = 24) {
     written,
     input,
     stopWatch,
+    paused,
+    onInterrupt,
     read,
     out: () => written.join(''),
     /** What is on screen now: each draw writes exactly one frame. */
@@ -52,6 +62,12 @@ function harness(markdown = '# Title\n\nbody', rows = 24) {
     resize: () => resizeListeners.forEach((fn) => fn()),
     change: (next: string) => {
       content = next
+      error = null
+      onChange()
+    },
+    /** Make the next read reject, as a deleted or unreadable file does. */
+    fail: (err: Error) => {
+      error = err
       onChange()
     },
     /**
@@ -109,6 +125,10 @@ describe('createApp', () => {
     expect(h.out()).toContain(CURSOR_SHOW)
     expect(h.rawMode()).toBe(false)
     expect(h.stopWatch).toHaveBeenCalled()
+    // Pausing stdin is the only thing that lets the process exit: removing the
+    // 'data' listener leaves the stream flowing, and a flowing stdin holds the
+    // event loop open. Without it, `q` restored the terminal and then hung.
+    expect(h.paused).toHaveBeenCalled()
   })
 
   it('restores exactly once even if stop is called twice', async () => {
@@ -126,6 +146,21 @@ describe('createApp', () => {
     await h.app.start()
     h.press(key)
     expect(h.out()).toContain(ALT_SCREEN_OFF)
+  })
+
+  it('reports an interrupt separately from a deliberate quit', async () => {
+    // Ctrl-C arrives as a byte in raw mode, not as SIGINT, so nothing outside the
+    // key handler can tell it from `q`. A script reading $? should still see the
+    // difference: 130 for an interrupt, 0 for quitting.
+    const interrupted = harness()
+    await interrupted.app.start()
+    interrupted.press(CTRL_C)
+    expect(interrupted.onInterrupt).toHaveBeenCalledTimes(1)
+
+    const quit = harness()
+    await quit.app.start()
+    quit.press('q')
+    expect(quit.onInterrupt).not.toHaveBeenCalled()
   })
 
   // Asserted as "the restore is the last thing written" rather than as a write
@@ -162,6 +197,56 @@ describe('createApp', () => {
     expect(h.frame()).not.toBe(single.frame())
     h.app.stop()
     single.app.stop()
+  })
+
+  it('survives the file being deleted under it', async () => {
+    // An agent renaming or replacing a plan makes the next read throw. Letting
+    // that reject unhandled kills the process with the terminal still in the
+    // alt screen and raw mode on — the one failure with no easy recovery.
+    const h = harness('# Here')
+    await h.app.start()
+    await h.reloaded(() => h.fail(new Error('ENOENT: no such file')))
+    expect(h.frame()).not.toBe('')
+    // Still watching, so the file coming back is picked up.
+    await h.reloaded(() => h.change('# Back'))
+    expect(h.frame()).toContain('Back')
+    h.app.stop()
+  })
+
+  it('reports the read failure instead of showing stale content as current', async () => {
+    const h = harness('# Here')
+    await h.app.start()
+    await h.reloaded(() => h.fail(new Error('EACCES: permission denied')))
+    expect(h.frame()).toContain('EACCES')
+    h.app.stop()
+  })
+
+  it('falls back to a sane size when the terminal reports none', async () => {
+    // process.stdout.columns and rows are undefined off a tty despite the type
+    // saying otherwise. Passing them through produced NaN arithmetic: a blank
+    // pane and a footer reading "NaN%".
+    const written: string[] = []
+    const app = createApp({
+      file: '/plans/a.md',
+      read: () => Promise.resolve('# Title\n\nbody'),
+      watch: () => () => {},
+      tty: {
+        write: (s) => written.push(s),
+        columns: undefined as unknown as number,
+        rows: undefined as unknown as number,
+        isTTY: true,
+        on: () => {},
+        off: () => {},
+      },
+      input: new EventEmitter() as never,
+      env: {},
+    })
+    await app.start()
+    const frame = written[written.length - 1] ?? ''
+    expect(frame).toContain('Title')
+    expect(frame).toContain('body')
+    expect(frame).not.toContain('NaN')
+    app.stop()
   })
 
   it('redraws on resize', async () => {

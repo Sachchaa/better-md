@@ -10,6 +10,7 @@ describe('parseCliArgs', () => {
       open: true,
       agent: null,
       detach: false,
+      terminal: false,
       command: null,
       initTarget: null,
       write: false,
@@ -25,6 +26,7 @@ describe('parseCliArgs', () => {
       open: true,
       agent: null,
       detach: false,
+      terminal: false,
       command: null,
       initTarget: null,
       write: false,
@@ -175,5 +177,42 @@ describe('parseCliArgs', () => {
   it('leaves ordinary runs with no command', () => {
     expect(parseCliArgs(['a.md']).command).toBeNull()
     expect(parseCliArgs(['a.md']).checkUpdates).toBe(false)
+  })
+
+  describe('--terminal', () => {
+    it('parses --terminal and its -t shorthand', () => {
+      expect(parseCliArgs(['--terminal', 'a.md']).terminal).toBe(true)
+      expect(parseCliArgs(['-t', 'a.md']).terminal).toBe(true)
+      expect(parseCliArgs(['a.md']).terminal).toBe(false)
+    })
+
+    it('combines --terminal with --plan and --agent', () => {
+      const opts = parseCliArgs(['--plan', '--terminal', '--agent', 'cursor'])
+      expect(opts).toMatchObject({ plan: true, terminal: true, agent: 'cursor' })
+    })
+
+    it('rejects --terminal alongside flags that only make sense for the server', () => {
+      // Silently ignoring --port in terminal mode would leave someone believing a
+      // server was listening.
+      expect(() => parseCliArgs(['--terminal', '--port', '9', 'a.md'])).toThrow(UsageError)
+      expect(() => parseCliArgs(['--terminal', '--detach', 'a.md'])).toThrow(UsageError)
+    })
+
+    it('names the offending flag so the message is actionable', () => {
+      expect(() => parseCliArgs(['--terminal', '--port', '9', 'a.md'])).toThrow(/--port/)
+      expect(() => parseCliArgs(['--terminal', '--detach', 'a.md'])).toThrow(/--detach/)
+    })
+
+    it('accepts --no-open with --terminal, which opens no browser anyway', () => {
+      // Not an error: --no-open asks for no browser, and terminal mode already
+      // opens none. Rejecting it would fail scripts that pass it unconditionally.
+      expect(parseCliArgs(['--terminal', '--no-open', 'a.md']).terminal).toBe(true)
+    })
+
+    it('leaves terminal off for the subcommands', () => {
+      expect(parseCliArgs(['update']).terminal).toBe(false)
+      expect(parseCliArgs(['init', 'claude']).terminal).toBe(false)
+      expect(parseCliArgs(['--check-updates']).terminal).toBe(false)
+    })
   })
 })
