@@ -641,6 +641,22 @@ describe('createApp', () => {
       h.app.stop()
     })
 
+    it('types q into the query instead of quitting', async () => {
+      // `/query` must search for "query". Checking the quit key first made every
+      // word containing a q unsearchable — it quit on the first keystroke.
+      const h = harness('# Goal\n\nthe query lives here')
+      await h.app.start()
+      h.press('/')
+      h.press('query')
+      expect(h.frame()).toContain('/query')
+      h.press('\r')
+      // Stripped: the match is highlighted, so the escape codes split the
+      // literal text apart in the raw frame.
+      expect(stripAnsi(h.frame())).toContain('query lives here')
+      expect(stripAnsi(h.frame())).toContain('1/1')
+      h.app.stop()
+    })
+
     it('still quits on ctrl-c while typing a query', async () => {
       const h = harness(doc)
       await h.app.start()

@@ -103,6 +103,28 @@ export interface App {
  */
 const SETTLE_MS = 150
 
+/** How long an "Updated" flash stays before settling back to "Watching". */
+const UPDATED_MS = 2000
+
+/** Shown instead of a blank pane, which reads as a broken viewer. */
+const EMPTY_DOCUMENT = 'This Markdown file is empty.'
+
+const HELP = [
+  'Keys',
+  '',
+  '  j / k / ↓ / ↑    scroll a line',
+  '  space / f        page forward',
+  '  u / PgUp         page back',
+  '  g / G            start / end',
+  '  /                search, then n and N to cycle',
+  '  o                heading outline',
+  '  e                open in $EDITOR',
+  '  b                open the browser editor',
+  '  r                reload now',
+  '  ?                this help',
+  '  q                quit',
+]
+
 /** Header and footer each take a row. */
 const CHROME_ROWS = 2
 
@@ -142,6 +164,16 @@ export function createApp(options: AppOptions): App {
   let opening = false
   /** Non-null while the outline overlay is open, holding the selected index. */
   let outline: { selected: number } | null = null
+  /** True while the help overlay is open. */
+  let help = false
+  /**
+   * What the footer says about the file.
+   *
+   * A live reload is otherwise indistinguishable from nothing happening: the
+   * reader cannot tell whether their agent has written yet.
+   */
+  let status: 'watching' | 'updated' | 'removed' = 'watching'
+  let settleStatus: NodeJS.Timeout | null = null
   /**
    * The search state.
    *
@@ -170,18 +202,31 @@ export function createApp(options: AppOptions): App {
     return chrome(` ${name}${pad}`)
   }
 
+  const dot = supportsUnicode(env) ? '●' : '*'
+
   const footer = (): string => {
     if (search !== null && search.typing) return chrome(` /${search.query}`)
 
     const end = Math.min(view.total, view.top + view.height)
     const percent = view.total === 0 ? 100 : Math.round((end / view.total) * 100)
+    const state =
+      status === 'removed'
+        ? 'File removed'
+        : status === 'updated'
+          ? `Updated ${dot}`
+          : `Watching ${dot}`
     const left =
       search === null
-        ? ` ${percent}%`
+        ? ` ${percent}%  ${state}`
         : search.matches.length === 0
           ? ` No match for "${search.query}"`
           : ` ${search.current + 1}/${search.matches.length} for "${search.query}"`
-    const right = outline === null ? 'q quit  j/k scroll  o outline ' : 'enter open  esc close '
+    // One line on an 80-column terminal cannot hold every key, so it advertises
+    // the overlay rather than truncating a list.
+    const right =
+      outline !== null || help
+        ? 'enter open  esc close '
+        : 'j/k navigate  / search  o outline  ? help  q quit '
     const pad = ' '.repeat(
       Math.max(1, columns() - displayWidth(left) - displayWidth(right))
     )
@@ -208,9 +253,12 @@ export function createApp(options: AppOptions): App {
         : [style(truncate(`! ${failure}`, columns()), 'bold', { enabled: colour() })]),
     ]
     const height = Math.max(1, bodyHeight() - banner.length)
-    const body =
-      outline === null
-        ? lines.slice(view.top, view.top + height).map((l, offset) => {
+    const body = help
+      ? HELP.map((l) => truncate(l, columns())).slice(0, height)
+      : outline === null
+        ? lines.length === 0
+          ? [style(EMPTY_DOCUMENT, 'dim', { enabled: colour() })]
+          : lines.slice(view.top, view.top + height).map((l, offset) => {
             const index = view.top + offset
             const onLine = search?.matches.filter((m) => m.line === index) ?? []
             if (onLine.length === 0) return truncate(l.text, columns())
@@ -260,6 +308,9 @@ export function createApp(options: AppOptions): App {
       // saying why it is not current, and the watcher keeps running so the file
       // coming back is picked up.
       failure = err instanceof Error ? err.message : String(err)
+      // A missing file is the ordinary case here — an agent renaming or replacing
+      // a plan — so it gets its own wording rather than an errno.
+      status = (err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT' ? 'removed' : status
       draw()
       return
     }
@@ -282,6 +333,23 @@ export function createApp(options: AppOptions): App {
     })
     research()
     draw()
+  }
+
+  /**
+   * Flash "Updated", then settle back to "Watching".
+   *
+   * Only for a change the watcher reported: the first load is not an update, and
+   * saying so would make a freshly opened file look like it had just changed.
+   */
+  const flashUpdated = (): void => {
+    status = 'updated'
+    if (settleStatus !== null) clearTimeout(settleStatus)
+    settleStatus = setTimeout(() => {
+      settleStatus = null
+      if (status === 'updated') status = 'watching'
+      draw()
+    }, UPDATED_MS)
+    settleStatus.unref?.()
   }
 
   /** Serialised: two overlapping reads would race to set `lines`. */
@@ -368,6 +436,21 @@ export function createApp(options: AppOptions): App {
    * bindings stay inert: `j` moving both the selection and the page would drop
    * the reader somewhere they never chose.
    */
+  /**
+   * Keys while the help overlay is open.
+   *
+   * Everything except quit is swallowed, so the document cannot scroll behind a
+   * panel the reader is reading.
+   */
+  const handleHelp = (k: Key): boolean => {
+    if (!help) return false
+    if (k.name === 'escape' || (k.name === 'char' && k.value === '?')) {
+      help = false
+      draw()
+    }
+    return true
+  }
+
   const handleOutline = (k: Key, entries: OutlineEntry[]): boolean => {
     if (outline === null) return false
 
@@ -459,11 +542,17 @@ export function createApp(options: AppOptions): App {
   }
 
   const handle = (k: Key): void => {
+    // Ctrl-C first and always: it is the universal interrupt, and a reader who
+    // wants out must never have to work out which mode they are in.
     if (k.name === 'ctrl-c') {
       stop()
       options.onInterrupt?.()
       return
     }
+    // Before the quit key, because `q` is a letter to someone typing a query.
+    // Checking quit first made every word containing a q unsearchable: `/query`
+    // quit on the first keystroke. Escape cancels the prompt.
+    if (handleTyping(k)) return
     if (k.name === 'char' && k.value === 'q') {
       stop()
       return
@@ -475,8 +564,9 @@ export function createApp(options: AppOptions): App {
       draw()
       return
     }
-    // Both checked after quit, so neither can trap the reader.
-    if (handleTyping(k)) return
+    // Checked after quit: these overlays take no text, so `q` means quit in
+    // them and cannot trap the reader.
+    if (handleHelp(k)) return
     if (handleOutline(k, buildOutline(lines))) return
     if (k.name === 'escape') {
       // Clears the highlighting left behind once the prompt has closed.
@@ -509,6 +599,10 @@ export function createApp(options: AppOptions): App {
         return move(toBottom(view))
       case 'o':
         outline = { selected: 0 }
+        draw()
+        return
+      case '?':
+        help = true
         draw()
         return
       case '/':
@@ -568,7 +662,12 @@ export function createApp(options: AppOptions): App {
       if (settle !== null) clearTimeout(settle)
       settle = setTimeout(() => {
         settle = null
-        reload()
+        // Set before the read: a successful one clears it back to `updated`,
+        // and a failing one replaces it with `removed`.
+        status = 'updated'
+        loading = loading.then(load, load).then(() => {
+          if (status !== 'removed') flashUpdated()
+        })
       }, SETTLE_MS)
       // Never hold the process open on the debounce alone.
       settle.unref?.()
@@ -582,6 +681,7 @@ export function createApp(options: AppOptions): App {
     if (stopped) return
     stopped = true
     if (settle !== null) clearTimeout(settle)
+    if (settleStatus !== null) clearTimeout(settleStatus)
     unwatch?.()
     if (onData !== null) input.off('data', onData)
     if (onResize !== null) tty.off('resize', onResize)
