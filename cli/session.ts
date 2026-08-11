@@ -96,13 +96,26 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
  * unrelated process, and the port can be taken over by something else entirely —
  * only a successful authenticated request proves the thing listening is ours.
  */
+/**
+ * How long to wait for a recorded server to answer.
+ *
+ * Node's fetch has no default timeout, so a process still holding the port but
+ * no longer replying would hang the caller forever. Generous for a loopback
+ * request, short enough that a listing does not feel stuck.
+ */
+const LIVENESS_TIMEOUT_MS = 2000
+
 export async function sessionIsLive(
   record: SessionRecord,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  timeoutMs: number = LIVENESS_TIMEOUT_MS
 ): Promise<boolean> {
   try {
     const res = await fetchImpl(`http://127.0.0.1:${record.port}/api/workspace`, {
       headers: { authorization: `Bearer ${record.token}` },
+      // A signal rather than a bare race, so the socket is actually torn down
+      // instead of left open behind an abandoned promise.
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) return false
     await res.text()

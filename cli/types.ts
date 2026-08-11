@@ -20,7 +20,7 @@ export interface CliOptions {
   /** Render in the terminal instead of serving the browser editor. */
   terminal: boolean
   /** A subcommand that replaces the normal "open a workspace" run. */
-  command: 'update' | 'uninstall' | 'init' | null
+  command: 'update' | 'uninstall' | 'init' | 'sessions' | null
   /** Which agent `init` should configure. */
   initTarget: string | null
   /** `init` writes to the agent's config only when asked. */

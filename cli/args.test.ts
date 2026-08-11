@@ -215,4 +215,27 @@ describe('parseCliArgs', () => {
       expect(parseCliArgs(['--check-updates']).terminal).toBe(false)
     })
   })
+
+  describe('sessions', () => {
+    it('is a command, not a path', () => {
+      expect(parseCliArgs(['sessions']).command).toBe('sessions')
+      expect(parseCliArgs(['sessions']).target).toBeNull()
+    })
+
+    it('can still open a file that is literally named sessions', () => {
+      // Same escape hatch as update and uninstall: a rule that changes with the
+      // contents of the current directory is worse than one that is always true.
+      expect(parseCliArgs(['./sessions']).command).toBeNull()
+      expect(parseCliArgs(['./sessions']).target).toBe('./sessions')
+    })
+
+    it('takes no other arguments', () => {
+      expect(() => parseCliArgs(['sessions', 'extra'])).toThrow(UsageError)
+      expect(() => parseCliArgs(['sessions', '--plan'])).toThrow(UsageError)
+    })
+
+    it('is listed in the help', () => {
+      expect(usage('better-md')).toContain('sessions')
+    })
+  })
 })

@@ -81,6 +81,28 @@ describe('read/write/remove', () => {
 })
 
 describe('sessionIsLive', () => {
+  it('gives up rather than hanging on a server that never answers', async () => {
+    // Node's fetch has no default timeout. A process holding the port open but
+    // not replying would hang `sessions` and `--detach`'s reuse check forever.
+    const hangs: FetchLike = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      })
+    const started = Date.now()
+    expect(await sessionIsLive(record, hangs, 60)).toBe(false)
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  it('passes a signal so the socket is torn down, not just abandoned', async () => {
+    let signal: AbortSignal | undefined
+    const capture: FetchLike = (_url, init) => {
+      signal = init?.signal ?? undefined
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    }
+    await sessionIsLive(record, capture)
+    expect(signal).toBeInstanceOf(AbortSignal)
+  })
+
   it('is live when the recorded token still authenticates', async () => {
     const fetchImpl: FetchLike = (url, init) => {
       const auth = (init?.headers as Record<string, string> | undefined)?.authorization
