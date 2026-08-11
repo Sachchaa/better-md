@@ -13,6 +13,7 @@ import { runTerminal } from './terminal.js'
 import { checkForUpdate, describeCheck, selfUpdate, UpdateError } from './update.js'
 import { initClaude, InitError } from './initAgent.js'
 import { removeSessionSync, sessionFile, writeSession } from './session.js'
+import { describeSessions, listSessions } from './sessions.js'
 import { uninstall, UninstallError } from './uninstall.js'
 import { VERSION } from './version.generated.js'
 import { watchWorkspace } from './watch.js'
@@ -77,6 +78,12 @@ async function main(): Promise<void> {
     process.stdout.write(
       `Would add to ${result.file}:\n\n${result.block}\n\n` + `Re-run with --write to apply it.\n`
     )
+    return
+  }
+
+  if (options.command === 'sessions') {
+    const running = await listSessions({ home: os.homedir() })
+    process.stdout.write(`${describeSessions(running, programName())}\n`)
     return
   }
 

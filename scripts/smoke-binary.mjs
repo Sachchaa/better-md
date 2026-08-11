@@ -86,6 +86,59 @@ try {
   })
   check('--help names the program', helpText.includes('better-md'), helpText.split('\n')[0])
 
+  // --- sessions ------------------------------------------------------------
+  // The listing has to work against a real detached server, and must never carry
+  // the bearer token the record holds. Its own HOME so the developer's real
+  // ~/.better-md is never read, listed or pruned by a test run.
+  {
+    const sessionHome = path.join(base, 'sessions-home')
+    await fs.mkdir(sessionHome, { recursive: true })
+    const env = { HOME: sessionHome }
+
+    const empty = await capture(['sessions'], env)
+    check(
+      'sessions says so when nothing is running',
+      empty.out.includes('No sessions running'),
+      empty.out.split('\n')[0]
+    )
+
+    const detached = spawn(binary, ['--detach', '--no-open', ws], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
+    })
+    const detachedUrl = await new Promise((resolve) => {
+      let out = ''
+      detached.stdout.on('data', (d) => {
+        out += d.toString('utf8')
+        if (out.includes('http://')) resolve(out.trim().split('\n').pop())
+      })
+      detached.on('exit', () => resolve(out.trim().split('\n').pop() ?? ''))
+    })
+
+    const listed = await capture(['sessions'], env)
+    check('sessions lists a detached server', listed.out.includes('1 session running'), listed.out.split('\n')[0])
+    check('sessions names the workspace', listed.out.includes(ws))
+    check(
+      'sessions never prints the token',
+      !/\?t=|[a-f0-9]{40}/.test(listed.out),
+      listed.out.replace(/\n/g, ' ').slice(0, 60)
+    )
+
+    // Killed hard, so the record survives its server: the next listing must prune
+    // it rather than report a server that is gone.
+    const pid = Number(/pid (\d+)/.exec(listed.out)?.[1])
+    check('sessions reports the pid', Number.isInteger(pid) && pid > 0, `pid=${pid}`)
+    if (Number.isInteger(pid)) process.kill(pid, 'SIGKILL')
+    await new Promise((r) => setTimeout(r, 300))
+    const pruned = await capture(['sessions'], env)
+    check(
+      'sessions prunes a record whose server is gone',
+      pruned.out.includes('No sessions running'),
+      pruned.out.split('\n')[0]
+    )
+    void detachedUrl
+  }
+
   // --- terminal mode, one-shot ---------------------------------------------
   // A long plan rendered to a pipe, with the reader closing it immediately.
   // `better-md plan.md -t | less` and quitting less early is exactly this, and it
@@ -136,8 +189,8 @@ try {
   }
 
   /** Run the binary to completion, capturing the streams separately. */
-  function capture(args) {
-    const c = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  function capture(args, env = {}) {
+    const c = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
     return new Promise((resolve) => {
       let out = '',
         err = ''

@@ -30,6 +30,7 @@ Usage:
   ${name} <directory>      every markdown file in a directory
   ${name} update           replace this binary with the latest release
   ${name} uninstall        remove better-md and its btr-md alias
+  ${name} sessions         which detached servers are running, and where
   ${name} init claude      preview a Claude Code hook for each finished plan
 
 Options:
@@ -43,8 +44,8 @@ Options:
   --version         print the version
   --help            show this message
 
-To open a file or directory literally named "update" or "uninstall", prefix it
-with ./ — for example ./update.`
+To open a file or directory literally named "update", "uninstall" or "sessions",
+prefix it with ./ — for example ./update.`
 }
 
 function parsePort(raw: string): number {
@@ -124,7 +125,9 @@ export function parseCliArgs(argv: string[]): CliOptions {
         ? 'uninstall'
         : target === 'init'
           ? 'init'
-          : null
+          : target === 'sessions'
+            ? 'sessions'
+            : null
   const checkUpdates = values['check-updates'] === true
 
   // `update` and `--check-updates` do not open anything, so they take no target
