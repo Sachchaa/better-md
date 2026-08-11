@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeKey } from './keys.js'
+import { decodeKey, decodeKeys } from './keys.js'
 
 const ESC = '\x1b'
 
@@ -44,5 +44,41 @@ describe('decodeKey', () => {
   it('accepts a multi-byte character as one keypress', () => {
     // A paste or an IME sends the whole code point in one read.
     expect(decodeKey('é')).toEqual({ name: 'char', value: 'é' })
+  })
+})
+
+describe('decodeKeys', () => {
+  it('splits a batched chunk into one key per press', () => {
+    // Key repeat and paste both deliver several keys in one read. Decoding the
+    // chunk as a single key drops every one of them.
+    expect(decodeKeys('jjj')).toEqual([
+      { name: 'char', value: 'j' },
+      { name: 'char', value: 'j' },
+      { name: 'char', value: 'j' },
+    ])
+  })
+
+  it('keeps an escape sequence whole among plain characters', () => {
+    expect(decodeKeys(`q${ESC}[Bk`)).toEqual([
+      { name: 'char', value: 'q' },
+      { name: 'down' },
+      { name: 'char', value: 'k' },
+    ])
+  })
+
+  it('drops an unknown sequence without eating the key after it', () => {
+    expect(decodeKeys(`${ESC}[200~j`)).toEqual([{ name: 'char', value: 'j' }])
+  })
+
+  it('treats a trailing lone escape as the escape key', () => {
+    expect(decodeKeys(`j${ESC}`)).toEqual([{ name: 'char', value: 'j' }, { name: 'escape' }])
+  })
+
+  it('does not split a character that needs two code units', () => {
+    expect(decodeKeys('🚀')).toEqual([{ name: 'char', value: '🚀' }])
+  })
+
+  it('returns nothing for an empty read', () => {
+    expect(decodeKeys('')).toEqual([])
   })
 })

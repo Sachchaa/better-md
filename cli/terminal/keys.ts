@@ -49,3 +49,46 @@ export function decodeKey(data: string): Key | null {
   if (codePoint === undefined || codePoint < 0x20) return null
   return { name: 'char', value: data }
 }
+
+/** Escape-sequence terminators: the byte that ends a CSI or SS3 sequence. */
+function isFinal(ch: string): boolean {
+  return ch >= '@' && ch <= '~'
+}
+
+/**
+ * Split one raw read into its keypresses.
+ *
+ * A single stdin chunk is not a single key: holding `j` under key repeat, or
+ * pasting, delivers several at once. Handing the whole chunk to `decodeKey`
+ * yields one nonsense char and drops the lot, which reads as scrolling that
+ * sticks.
+ */
+export function decodeKeys(data: string): Key[] {
+  const keys: Key[] = []
+  let i = 0
+
+  while (i < data.length) {
+    let token: string
+    if (data[i] !== ESC) {
+      // Consume a whole code point: splitting a surrogate pair mid-way turns one
+      // pasted character into two broken halves.
+      const cp = data.codePointAt(i)
+      token = data.slice(i, i + (cp !== undefined && cp > 0xffff ? 2 : 1))
+    } else if (data[i + 1] === '[' || data[i + 1] === 'O') {
+      let end = i + 2
+      while (end < data.length && !isFinal(data[end])) end++
+      token = data.slice(i, Math.min(end + 1, data.length))
+    } else if (i + 1 < data.length) {
+      // ESC followed by a character is Alt-<key>, which this viewer does not use.
+      token = data.slice(i, i + 2)
+    } else {
+      token = ESC
+    }
+
+    i += token.length
+    const key = decodeKey(token)
+    if (key !== null) keys.push(key)
+  }
+
+  return keys
+}
