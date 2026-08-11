@@ -893,4 +893,31 @@ describe('createApp', () => {
       h.app.stop()
     })
   })
+
+  it('composes search, outline, help and quit in one session', async () => {
+    // Each feature is covered on its own above; this is the interaction. Modes
+    // that each work alone can still strand the reader when stacked — an escape
+    // that closes the wrong one, or a quit key a mode has swallowed.
+    const h = harness(`# Probe\n\n${long}`)
+    await h.app.start()
+
+    h.press('G')
+    h.press('/item-030\r')
+    expect(stripAnsi(h.frame())).toContain('1/1')
+
+    h.press('o')
+    expect(h.frame()).toContain('Probe')
+
+    h.press(ESC)
+    expect(h.frame()).not.toContain('▸')
+
+    h.press('?')
+    expect(h.frame()).toContain('this help')
+
+    h.press('?')
+    expect(h.frame()).not.toContain('this help')
+
+    h.press('q')
+    expect(h.frame()).toBe(CURSOR_SHOW + ALT_SCREEN_OFF)
+  })
 })

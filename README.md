@@ -136,10 +136,42 @@ better-md update          # replace this binary with the latest release
 better-md uninstall       # remove better-md and its btr-md alias
 better-md init claude     # preview a hook that opens each finished plan
 better-md --detach ./docs # serve in the background and return
+better-md notes.md -t     # read it in the terminal instead of the browser
 ```
 
 To open a file or directory literally named `update` or `uninstall`, prefix it with
 `./`.
+
+### In the terminal
+
+```sh
+better-md --plan -t
+better-md notes.md --terminal
+```
+
+Renders the document in the terminal instead of starting a server. Same file
+resolution, same live reload — the pane updates as your agent rewrites the plan, and
+keeps your place in the section you were reading rather than jumping to the top.
+
+| Key | |
+| --- | --- |
+| `j` `k` `↓` `↑` | scroll a line |
+| `space` `f` / `u` `PgUp` | page forward / back |
+| `g` `G` | start / end |
+| `/` then `n` `N` | search, cycle matches |
+| `o` | heading outline |
+| `e` | open in `$EDITOR` |
+| `b` | hand off to the browser editor |
+| `?` | every key |
+| `q` | quit |
+
+Piping or redirecting prints the rendered document as plain text and exits, so
+`better-md plan.md -t | less` and `> plan.txt` both work.
+
+What it deliberately does not do: there is no editing in the terminal — `e` opens
+your editor and `b` opens the browser editor, which is where two-way editing lives.
+Code blocks are not syntax highlighted, and long lines inside them are truncated
+rather than scrolled sideways, because reflowing code changes what it says.
 
 ### Let the agent open it for you
 
