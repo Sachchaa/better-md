@@ -15,6 +15,7 @@ describe('parseCliArgs', () => {
       initTarget: null,
       write: false,
       checkUpdates: false,
+      sessions: false,
     })
   })
 
@@ -31,6 +32,7 @@ describe('parseCliArgs', () => {
       initTarget: null,
       write: false,
       checkUpdates: false,
+      sessions: false,
     })
   })
 
@@ -216,26 +218,37 @@ describe('parseCliArgs', () => {
     })
   })
 
-  describe('sessions', () => {
-    it('is a command, not a path', () => {
-      expect(parseCliArgs(['sessions']).command).toBe('sessions')
-      expect(parseCliArgs(['sessions']).target).toBeNull()
+  describe('--sessions', () => {
+    it('is a flag, like the other read-only queries', () => {
+      expect(parseCliArgs(['--sessions']).sessions).toBe(true)
+      expect(parseCliArgs(['--sessions']).target).toBeNull()
+      expect(parseCliArgs(['--sessions']).command).toBeNull()
     })
 
-    it('can still open a file that is literally named sessions', () => {
-      // Same escape hatch as update and uninstall: a rule that changes with the
-      // contents of the current directory is worse than one that is always true.
-      expect(parseCliArgs(['./sessions']).command).toBeNull()
+    it('leaves a directory named sessions alone', () => {
+      // A plural noun like this is a plausible folder — standup notes, session
+      // plans. Reserving the bare word would shadow it, and unlike `update` or
+      // `uninstall` nobody would expect that.
+      expect(parseCliArgs(['sessions']).target).toBe('sessions')
+      expect(parseCliArgs(['sessions']).sessions).toBe(false)
       expect(parseCliArgs(['./sessions']).target).toBe('./sessions')
     })
 
-    it('takes no other arguments', () => {
-      expect(() => parseCliArgs(['sessions', 'extra'])).toThrow(UsageError)
-      expect(() => parseCliArgs(['sessions', '--plan'])).toThrow(UsageError)
+    it('takes no target and no --plan, rather than ignoring half of what was typed', () => {
+      expect(() => parseCliArgs(['--sessions', 'notes.md'])).toThrow(UsageError)
+      expect(() => parseCliArgs(['--sessions', '--plan'])).toThrow(UsageError)
+    })
+
+    it('names itself in the error, so the message is actionable', () => {
+      expect(() => parseCliArgs(['--sessions', 'notes.md'])).toThrow(/--sessions/)
+    })
+
+    it('is off for an ordinary run', () => {
+      expect(parseCliArgs(['a.md']).sessions).toBe(false)
     })
 
     it('is listed in the help', () => {
-      expect(usage('better-md')).toContain('sessions')
+      expect(usage('better-md')).toContain('--sessions')
     })
   })
 })

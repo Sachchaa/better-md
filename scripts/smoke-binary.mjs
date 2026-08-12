@@ -95,9 +95,9 @@ try {
     await fs.mkdir(sessionHome, { recursive: true })
     const env = { HOME: sessionHome }
 
-    const empty = await capture(['sessions'], env)
+    const empty = await capture(['--sessions'], env)
     check(
-      'sessions says so when nothing is running',
+      '--sessions says so when nothing is running',
       empty.out.includes('No sessions running'),
       empty.out.split('\n')[0]
     )
@@ -115,11 +115,11 @@ try {
       detached.on('exit', () => resolve(out.trim().split('\n').pop() ?? ''))
     })
 
-    const listed = await capture(['sessions'], env)
-    check('sessions lists a detached server', listed.out.includes('1 session running'), listed.out.split('\n')[0])
-    check('sessions names the workspace', listed.out.includes(ws))
+    const listed = await capture(['--sessions'], env)
+    check('--sessions lists a detached server', listed.out.includes('1 session running'), listed.out.split('\n')[0])
+    check('--sessions names the workspace', listed.out.includes(ws))
     check(
-      'sessions never prints the token',
+      '--sessions never prints the token',
       !/\?t=|[a-f0-9]{40}/.test(listed.out),
       listed.out.replace(/\n/g, ' ').slice(0, 60)
     )
@@ -127,12 +127,12 @@ try {
     // Killed hard, so the record survives its server: the next listing must prune
     // it rather than report a server that is gone.
     const pid = Number(/pid (\d+)/.exec(listed.out)?.[1])
-    check('sessions reports the pid', Number.isInteger(pid) && pid > 0, `pid=${pid}`)
+    check('--sessions reports the pid', Number.isInteger(pid) && pid > 0, `pid=${pid}`)
     if (Number.isInteger(pid)) process.kill(pid, 'SIGKILL')
     await new Promise((r) => setTimeout(r, 300))
-    const pruned = await capture(['sessions'], env)
+    const pruned = await capture(['--sessions'], env)
     check(
-      'sessions prunes a record whose server is gone',
+      '--sessions prunes a record whose server is gone',
       pruned.out.includes('No sessions running'),
       pruned.out.split('\n')[0]
     )

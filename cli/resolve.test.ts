@@ -26,6 +26,7 @@ function opts(over: Partial<CliOptions>): CliOptions {
     initTarget: null,
     write: false,
     checkUpdates: false,
+    sessions: false,
     ...over,
   }
 }

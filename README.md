@@ -134,14 +134,14 @@ better-md --version       # what you have
 better-md --check-updates # whether a newer release exists
 better-md update          # replace this binary with the latest release
 better-md uninstall       # remove better-md and its btr-md alias
-better-md sessions        # which detached servers are running, and where
+better-md --sessions      # which detached servers are running, and where
 better-md init claude     # preview a hook that opens each finished plan
 better-md --detach ./docs # serve in the background and return
 better-md notes.md -t     # read it in the terminal instead of the browser
 ```
 
-To open a file or directory literally named `update`, `uninstall` or `sessions`, prefix
-it with `./`.
+To open a file or directory literally named `update` or `uninstall`, prefix it with
+`./`.
 
 ### In the terminal
 
@@ -198,7 +198,7 @@ no-op.
 
 `--detach` also works on its own, for any workspace.
 
-`better-md sessions` lists what those records describe — one line per workspace with the
+`better-md --sessions` lists what those records describe — one line per workspace with the
 address and pid — and prunes any whose server has gone. Liveness is proven by asking the
 server, not by checking the pid, because ports and pids are both recycled. It never
 prints the tokens the records hold, so the output is safe to paste into an issue.

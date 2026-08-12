@@ -20,13 +20,22 @@ export interface CliOptions {
   /** Render in the terminal instead of serving the browser editor. */
   terminal: boolean
   /** A subcommand that replaces the normal "open a workspace" run. */
-  command: 'update' | 'uninstall' | 'init' | 'sessions' | null
+  command: 'update' | 'uninstall' | 'init' | null
   /** Which agent `init` should configure. */
   initTarget: string | null
   /** `init` writes to the agent's config only when asked. */
   write: boolean
   /** --check-updates: report whether a newer release exists, then exit. */
   checkUpdates: boolean
+  /**
+   * --sessions: list the detached servers that are running, then exit.
+   *
+   * A flag rather than a bare `sessions` word, which would shadow a directory of
+   * that name — a plural noun is a plausible folder in a Markdown workspace, where
+   * `update` and `uninstall` are verbs nobody names one. It also matches the line
+   * the CLI already draws: subcommands act, flags ask.
+   */
+  sessions: boolean
 }
 
 /** One document in the workspace. `relPath` is always a bare filename. */
