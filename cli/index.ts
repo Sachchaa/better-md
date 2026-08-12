@@ -81,7 +81,7 @@ async function main(): Promise<void> {
     return
   }
 
-  if (options.command === 'sessions') {
+  if (options.sessions) {
     const running = await listSessions({ home: os.homedir() })
     process.stdout.write(`${describeSessions(running, programName())}\n`)
     return
