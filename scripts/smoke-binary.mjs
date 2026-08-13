@@ -102,7 +102,10 @@ try {
       empty.out.split('\n')[0]
     )
 
-    const detached = spawn(binary, ['--detach', '--no-open', ws], {
+    // An ephemeral port, not the default 8080: the port-fallback check below
+    // needs to own 8080, and a server of ours starting or dying on it turns that
+    // check into a race.
+    const detached = spawn(binary, ['--detach', '--no-open', '--port', '0', ws], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ...env },
     })
@@ -142,7 +145,7 @@ try {
 
     // Killed hard, so the record survives its server: the next listing must prune
     // it rather than report a server that is gone.
-    const second = spawn(binary, ['--detach', '--no-open', ws], {
+    const second = spawn(binary, ['--detach', '--no-open', '--port', '0', ws], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ...env },
     })
@@ -378,14 +381,42 @@ try {
   server = null
 
   // --- port selection, on the packaged binary ------------------------------
-  // Hold 8080 so the preferred port is unavailable. If something else already has
-  // it, that is equally fine — either way the binary must fall back rather than
-  // fail, which is the whole point of the default being best-effort.
+  // The premise is that 8080 is unavailable, and it has to be true for the whole
+  // of the run below. Treating a failed bind as "someone else has it, equally
+  // fine" is what made this flaky: a holder that goes away between the bind and
+  // the spawn leaves 8080 free, the binary takes it, and the check fails for a
+  // reason that has nothing to do with the binary.
   const blocker = net.createServer()
-  await new Promise((resolve) => {
-    blocker.once('error', resolve) // already taken by something else: also fine
-    blocker.listen(8080, '127.0.0.1', resolve)
-  })
+  const held = async () =>
+    new Promise((resolve) => {
+      blocker.once('error', () => resolve(false))
+      blocker.listen(8080, '127.0.0.1', () => resolve(true))
+    })
+  const portFree = (port) =>
+    new Promise((resolve) => {
+      const probe = net.createServer()
+      probe.once('error', () => resolve(false))
+      probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)))
+    })
+
+  let owns8080 = await held()
+  for (let attempt = 0; !owns8080 && attempt < 20; attempt++) {
+    // Whoever has it may be on their way out; wait for them rather than
+    // proceeding on an assumption.
+    await new Promise((r) => setTimeout(r, 150))
+    blocker.removeAllListeners('error')
+    owns8080 = await held()
+  }
+  // Holding it ourselves is the airtight case. Failing that, the premise still
+  // holds if something else genuinely has it — a developer's own server on 8080
+  // is a normal state, and the binary must fall back then too. What is not
+  // acceptable is proceeding while the port is free, which is the flake.
+  const unavailable = owns8080 || !(await portFree(8080))
+  check(
+    '8080 is unavailable before the fallback is tested',
+    unavailable,
+    owns8080 ? 'held by this test' : 'held by another process'
+  )
   const fellBack = await start(['--no-open', ws])
   check(
     'falls back when the preferred port is taken',
