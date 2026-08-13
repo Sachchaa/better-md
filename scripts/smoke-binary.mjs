@@ -124,9 +124,38 @@ try {
       listed.out.replace(/\n/g, ' ').slice(0, 60)
     )
 
+    // `stop` has to actually stop it, and clean up after itself.
+    const stopped = await capture(['stop'], env)
+    check('stop reports what it stopped', stopped.out.includes('Stopped 1 session'), stopped.out.split('\n')[0])
+    const afterStop = await capture(['--sessions'], env)
+    check(
+      'stop leaves nothing running',
+      afterStop.out.includes('No sessions running'),
+      afterStop.out.split('\n')[0]
+    )
+    const stopAgain = await capture(['stop'], env)
+    check(
+      'stop says so when there is nothing to stop',
+      stopAgain.out.includes('No sessions to stop'),
+      stopAgain.out.split('\n')[0]
+    )
+
     // Killed hard, so the record survives its server: the next listing must prune
     // it rather than report a server that is gone.
-    const pid = Number(/pid (\d+)/.exec(listed.out)?.[1])
+    const second = spawn(binary, ['--detach', '--no-open', ws], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
+    })
+    await new Promise((resolve) => {
+      let out = ''
+      second.stdout.on('data', (d) => {
+        out += d.toString('utf8')
+        if (out.includes('http://')) resolve()
+      })
+      second.on('exit', () => resolve())
+    })
+    const relisted = await capture(['--sessions'], env)
+    const pid = Number(/pid (\d+)/.exec(relisted.out)?.[1])
     check('--sessions reports the pid', Number.isInteger(pid) && pid > 0, `pid=${pid}`)
     if (Number.isInteger(pid)) process.kill(pid, 'SIGKILL')
     await new Promise((r) => setTimeout(r, 300))

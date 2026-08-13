@@ -31,6 +31,7 @@ Usage:
   ${name} update           replace this binary with the latest release
   ${name} uninstall        remove better-md and its btr-md alias
   ${name} init claude      preview a Claude Code hook for each finished plan
+  ${name} stop [dir]       stop a detached server, or all of them
 
 Options:
   --agent <id>      which agent's plans --plan opens (claude, cursor)
@@ -107,8 +108,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
   if (values.help) throw new InfoRequest(usage())
   if (values.version === true) throw new InfoRequest(`${programName()} ${VERSION}`)
 
-  // `init <agent>` is the only form taking two positionals.
-  if (positionals[0] !== 'init' && positionals.length > 1) {
+  // `init <agent>` and `stop [dir]` are the only forms taking two positionals.
+  if (positionals[0] !== 'init' && positionals[0] !== 'stop' && positionals.length > 1) {
     throw new UsageError(`expected at most one file or directory, got ${positionals.length}`)
   }
   const target = positionals[0] ?? null
@@ -127,7 +128,9 @@ export function parseCliArgs(argv: string[]): CliOptions {
         ? 'uninstall'
         : target === 'init'
           ? 'init'
-          : null
+          : target === 'stop'
+            ? 'stop'
+            : null
   const checkUpdates = values['check-updates'] === true
   const sessions = values.sessions === true
   // Rejected rather than ignored, like --check-updates: it opens nothing, so a
@@ -143,6 +146,30 @@ export function parseCliArgs(argv: string[]): CliOptions {
   // `update` and `--check-updates` do not open anything, so they take no target
   // and no --plan. Rejecting the combination beats silently ignoring half of what
   // was typed.
+  if (command === 'stop') {
+    if (positionals.length > 2) {
+      throw new UsageError(`stop takes at most one directory, got ${positionals.length - 1}`)
+    }
+    // --plan resolves a plans directory to open, while stop's argument names the
+    // workspace to stop. Accepting both would be ambiguous about which it meant.
+    if (values.plan === true) throw new UsageError('stop cannot be combined with --plan')
+    return {
+      target: null,
+      plan: false,
+      port: null,
+      open: false,
+      agent: null,
+      detach: false,
+      terminal: false,
+      command,
+      initTarget: null,
+      stopTarget: positionals[1] ?? null,
+      write: false,
+      checkUpdates: false,
+      sessions: false,
+    }
+  }
+
   if (command === 'init') {
     const which = positionals[1] ?? null
     if (which === null) throw new UsageError('init needs an agent, e.g. init claude')
@@ -159,6 +186,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
       terminal: false,
       command,
       initTarget: which,
+      stopTarget: null,
       write: values.write === true,
       checkUpdates: false,
       sessions: false,
@@ -176,6 +204,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
       terminal: false,
       command: null,
       initTarget: null,
+      stopTarget: null,
       write: false,
       checkUpdates: false,
       sessions: true,
@@ -198,6 +227,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
       terminal: false,
       command,
       initTarget: null,
+      stopTarget: null,
       write: false,
       checkUpdates,
       sessions: false,
@@ -244,6 +274,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     terminal,
     command: null,
     initTarget: null,
+    stopTarget: null,
     write: false,
     checkUpdates: false,
     sessions: false,
