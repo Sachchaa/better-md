@@ -29,6 +29,11 @@ body,
   --code-bg: #f1f1ed;
   --accent: var(--accent-color, #3b6df2);
   --selbg: color-mix(in srgb, var(--accent) 16%, transparent);
+  /* The brand green, identical in both themes. Deliberately separate from
+     --accent, which drives buttons and selection: white text on this green is
+     1.55:1, so making it the UI accent would mean restyling every primary
+     control to dark text. */
+  --brand: #a8e063;
 }
 [data-theme='dark'] {
   --bg: #0d0d0f;
@@ -41,6 +46,7 @@ body,
   --code-bg: #1d1d22;
   --accent: var(--accent-color, #5b87ff);
   --selbg: color-mix(in srgb, var(--accent) 26%, transparent);
+  --brand: #a8e063;
 }
 
 textarea::selection {
