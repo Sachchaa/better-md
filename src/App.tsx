@@ -911,10 +911,10 @@ export default class App extends React.Component<Props, State> {
             <div className="flex items-center gap-[9px] min-w-0">
               <span
                 aria-hidden="true"
-                className="w-[13px] h-[13px] rounded-[3px] bg-[var(--accent)] shrink-0"
+                className="w-[13px] h-[13px] rounded-[3px] bg-[var(--brand)] shrink-0"
               />
               <span className="font-bold text-[14px] leading-none font-sans tracking-[-0.01em]">
-                Markdown
+                better-md
               </span>
               <span aria-hidden="true" className="text-[var(--faint)] text-[13px]">
                 /

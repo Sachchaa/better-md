@@ -4,6 +4,20 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>better-md — read your coding agent's plans like documents</title>
+    <!-- Absolute, like the hero screenshot: these resolve against `/` after the
+         host rewrite, so a relative path 404s in production. -->
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:title" content="better-md" />
+    <meta
+      property="og:description"
+      content="Your coding agent wrote a plan. Read it like a document."
+    />
+    <meta property="og:image" content="https://better-md.dev/site/og-image.png" />
+    <meta property="og:url" content="https://better-md.dev" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://better-md.dev/site/og-image.png" />
     <meta
       name="description"
       content="better-md opens your agent's Markdown in a local editor. Watch plans update live, edit them, and save straight back to the original file. No account, no cloud service, nothing leaves your machine."
@@ -137,31 +151,21 @@
         gap: 20px;
       }
       .mark {
-        font-family: var(--mono);
-        font-size: 15px;
-        font-weight: 500;
-        letter-spacing: -0.01em;
-        white-space: nowrap;
         display: inline-flex;
-        align-items: baseline;
-        gap: 1px;
+        align-items: center;
       }
-      .mark .hash {
-        color: var(--accent);
-      }
-      .caret {
-        color: var(--accent);
-        animation: blink 1.15s steps(1, end) infinite;
-      }
-      @keyframes blink {
-        50% {
-          opacity: 0;
-        }
+      /* Height-driven: the asset is ~5x the rendered size, so it stays crisp on a
+         retina display without a second file. */
+      .mark img {
+        /* 36px, chosen by comparing rendered headers: the wordmark is only 31% of
+           the logo's height, so at 22px "better" fell to 7px and stopped reading
+           next to 15px nav links. Beyond ~40px the badge starts to dominate the
+           bar. */
+        height: 36px;
+        width: auto;
+        display: block;
       }
       @media (prefers-reduced-motion: reduce) {
-        .caret {
-          animation: none;
-        }
         html {
           scroll-behavior: auto;
         }
@@ -656,9 +660,9 @@
   <body>
     <header>
       <div class="wrap bar">
-        <a class="mark" href="/"
-          ><span class="hash">#</span>better-md<span class="caret">_</span></a
-        >
+        <a class="mark" href="/">
+          <img src="/site/logo.png" alt="better-md" width="292" height="128" />
+        </a>
         <nav>
           <a class="nav-secondary" href="#how">How it works</a>
           <a class="nav-secondary" href="#security">Security</a>

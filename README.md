@@ -1,11 +1,16 @@
-<h1 align="center">better-md</h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/site/logo.png">
+    <img src="public/site/logo-light.png" width="292" alt="better-md">
+  </picture>
+</h1>
 
 <p align="center">
   Your coding agent wrote a plan. Read it like a document.
 </p>
 
 <p align="center">
-  <a href="https://github.com/Sachchaa/better-md/releases"><img src="https://img.shields.io/github/v/release/Sachchaa/better-md?color=3b6df2" alt="Latest release"></a>
+  <a href="https://github.com/Sachchaa/better-md/releases"><img src="https://img.shields.io/github/v/release/Sachchaa/better-md?color=a8e063" alt="Latest release"></a>
   <a href="https://github.com/Sachchaa/better-md/actions/workflows/ci.yml"><img src="https://github.com/Sachchaa/better-md/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Sachchaa/better-md?color=73736c" alt="MIT license"></a>
 </p>

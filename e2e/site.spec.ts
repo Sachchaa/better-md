@@ -132,3 +132,39 @@ test('the copy button reports success without a clipboard permission', async ({
   // undefined, and the button must still say something rather than throwing.
   await expect(page.locator('#copy')).toHaveText(/Copied|Select it/)
 })
+
+test('the brand mark and icons resolve, on the routed host', async ({ page }) => {
+  await page.goto(PAGE)
+
+  // Same trap as the hero screenshot: a broken <img> is still "visible", and the
+  // paths must be absolute because they resolve against `/` after the host
+  // rewrite rather than against `/site/`.
+  const mark = page.locator('.mark img')
+  await expect(mark).toBeVisible()
+  const natural = await mark.evaluate(
+    (el) => (el as unknown as { naturalWidth: number }).naturalWidth
+  )
+  expect(natural).toBeGreaterThan(100)
+  expect(await mark.getAttribute('src')).toMatch(/^\//)
+
+  // The icons and the social card ship, and the icon links point at real files.
+  for (const name of ['favicon.png', 'apple-touch-icon.png']) {
+    await expect(fs.access(path.resolve('dist', name))).resolves.toBeUndefined()
+    expect(await page.locator(`link[href="/${name}"]`).count()).toBeGreaterThan(0)
+  }
+  for (const name of ['logo.png', 'logo-light.png', 'og-image.png']) {
+    await expect(fs.access(path.resolve('dist/site', name))).resolves.toBeUndefined()
+  }
+
+  // A social card that 404s is invisible until someone shares the link.
+  const og = await page.locator('meta[property="og:image"]').getAttribute('content')
+  expect(og).toBe('https://better-md.dev/site/og-image.png')
+})
+
+test('the editor names itself and carries the icon', async () => {
+  // It shipped as "Markdown Dashboard", a name the product never had.
+  const html = await fs.readFile(path.resolve('dist/app/index.html'), 'utf8')
+  expect(html).toContain('<title>better-md</title>')
+  expect(html).toContain('href="/favicon.png"')
+})
+
