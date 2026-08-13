@@ -13,6 +13,7 @@ describe('parseCliArgs', () => {
       terminal: false,
       command: null,
       initTarget: null,
+      stopTarget: null,
       write: false,
       checkUpdates: false,
       sessions: false,
@@ -30,6 +31,7 @@ describe('parseCliArgs', () => {
       terminal: false,
       command: null,
       initTarget: null,
+      stopTarget: null,
       write: false,
       checkUpdates: false,
       sessions: false,
@@ -249,6 +251,37 @@ describe('parseCliArgs', () => {
 
     it('is listed in the help', () => {
       expect(usage('better-md')).toContain('--sessions')
+    })
+  })
+
+  describe('stop', () => {
+    it('is a subcommand, because it acts', () => {
+      expect(parseCliArgs(['stop']).command).toBe('stop')
+      expect(parseCliArgs(['stop']).stopTarget).toBeNull()
+    })
+
+    it('takes an optional workspace', () => {
+      expect(parseCliArgs(['stop', './docs']).command).toBe('stop')
+      expect(parseCliArgs(['stop', './docs']).stopTarget).toBe('./docs')
+    })
+
+    it('takes at most one workspace', () => {
+      expect(() => parseCliArgs(['stop', 'a', 'b'])).toThrow(UsageError)
+    })
+
+    it('cannot be combined with --plan', () => {
+      // --plan resolves a plans directory to open; stop takes the workspace to
+      // stop. Honouring both would be ambiguous about which one it meant.
+      expect(() => parseCliArgs(['stop', '--plan'])).toThrow(UsageError)
+    })
+
+    it('leaves a directory named stop openable', () => {
+      expect(parseCliArgs(['./stop']).command).toBeNull()
+      expect(parseCliArgs(['./stop']).target).toBe('./stop')
+    })
+
+    it('is listed in the help', () => {
+      expect(usage('better-md')).toContain('stop')
     })
   })
 })

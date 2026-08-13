@@ -20,9 +20,16 @@ export interface CliOptions {
   /** Render in the terminal instead of serving the browser editor. */
   terminal: boolean
   /** A subcommand that replaces the normal "open a workspace" run. */
-  command: 'update' | 'uninstall' | 'init' | null
+  command: 'update' | 'uninstall' | 'init' | 'stop' | null
   /** Which agent `init` should configure. */
   initTarget: string | null
+  /**
+   * Which workspace `stop` should stop; null means every running session.
+   *
+   * A subcommand rather than a flag because it acts, and a verb nobody names a
+   * directory after — the reason `--sessions`, a plural noun, is a flag.
+   */
+  stopTarget: string | null
   /** `init` writes to the agent's config only when asked. */
   write: boolean
   /** --check-updates: report whether a newer release exists, then exit. */

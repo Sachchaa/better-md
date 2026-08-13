@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import sea from 'node:sea'
@@ -14,6 +15,7 @@ import { checkForUpdate, describeCheck, selfUpdate, UpdateError } from './update
 import { initClaude, InitError } from './initAgent.js'
 import { removeSessionSync, sessionFile, writeSession } from './session.js'
 import { describeSessions, listSessions } from './sessions.js'
+import { describeStopped, stopSessions } from './stop.js'
 import { uninstall, UninstallError } from './uninstall.js'
 import { VERSION } from './version.generated.js'
 import { watchWorkspace } from './watch.js'
@@ -84,6 +86,26 @@ async function main(): Promise<void> {
   if (options.sessions) {
     const running = await listSessions({ home: os.homedir() })
     process.stdout.write(`${describeSessions(running, programName())}\n`)
+    return
+  }
+
+  if (options.command === 'stop') {
+    // Resolved the same way the workspace itself was — absolute, then through
+    // symlinks — so `stop ./docs` matches a record whose root was recorded via a
+    // different path to the same directory. A file resolves to its directory,
+    // because that is the workspace a server was given.
+    let root: string | null = null
+    if (options.stopTarget !== null) {
+      try {
+        const abs = path.resolve(options.stopTarget)
+        const stat = await fsp.stat(abs)
+        root = await fsp.realpath(stat.isDirectory() ? abs : path.dirname(abs))
+      } catch {
+        throw new ResolveError(`no such file or directory: ${options.stopTarget}`)
+      }
+    }
+    const stopped = await stopSessions({ home: os.homedir(), root })
+    process.stdout.write(`${describeStopped(stopped, programName())}\n`)
     return
   }
 

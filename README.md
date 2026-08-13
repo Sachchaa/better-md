@@ -135,6 +135,7 @@ better-md --check-updates # whether a newer release exists
 better-md update          # replace this binary with the latest release
 better-md uninstall       # remove better-md and its btr-md alias
 better-md --sessions      # which detached servers are running, and where
+better-md stop            # stop them, or `stop ./docs` for just one
 better-md init claude     # preview a hook that opens each finished plan
 better-md --detach ./docs # serve in the background and return
 better-md notes.md -t     # read it in the terminal instead of the browser
@@ -202,6 +203,13 @@ no-op.
 address and pid — and prunes any whose server has gone. Liveness is proven by asking the
 server, not by checking the pid, because ports and pids are both recycled. It never
 prints the tokens the records hold, so the output is safe to paste into an issue.
+
+`better-md stop` stops them — all of them, or `stop ./docs` for one workspace. It
+re-confirms each server is ours immediately before signalling, because a pid read out
+of a listing can be stale by the time you act on it: the server may have exited and
+the number been handed to something else. It sends SIGTERM so the server runs its own
+shutdown, and if one ignores that it says so with the pid rather than escalating —
+a forced exit skips the shutdown handler and can leave a half-written file behind.
 
 ### Which agent's plans
 

@@ -24,6 +24,7 @@ function opts(over: Partial<CliOptions>): CliOptions {
     terminal: false,
     command: null,
     initTarget: null,
+    stopTarget: null,
     write: false,
     checkUpdates: false,
     sessions: false,
