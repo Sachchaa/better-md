@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseBlocks } from '../blocks.js'
+import { PALETTE } from './ansi.js'
 import { renderDocument } from './render.js'
 import { displayWidth } from './wrap.js'
 
@@ -9,17 +10,42 @@ const render = (md: string, o = plain): string =>
     .map((l) => l.text)
     .join('\n')
 
+const coloured = { width: 60, unicode: true, colour: true }
+
 describe('headings', () => {
-  it('underlines a heading rather than printing its hashes', () => {
+  it('shows the text rather than its hashes', () => {
     const out = render('# Authentication Plan')
     expect(out).toContain('Authentication Plan')
     expect(out).not.toContain('#')
-    expect(out).toContain('═')
   })
 
-  it('uses a lighter rule for h2 than h1', () => {
+  it('carries the brand colour and weight when the terminal has colour', () => {
+    const out = render('# Authentication Plan', coloured)
+    expect(out).toContain('\x1b[1m')
+    expect(out).toContain(`38;5;${PALETTE.brand.ansi256}`)
+  })
+
+  it('drops the rule when colour can carry the hierarchy', () => {
+    // A rule under every heading costs a line each and reads as an artifact next
+    // to prose. Colour and weight say the same thing more quietly.
+    const out = render('# Authentication Plan\n\n## Goal', coloured)
+    expect(out).not.toContain('═')
+    expect(out).not.toContain('───')
+  })
+
+  it('keeps the rule when there is no colour, because nothing else is left', () => {
+    // `-t plan.md | less` and NO_COLOR emit no escapes at all, so the rule is the
+    // only hierarchy signal available — it is a fallback, not decoration.
+    expect(render('# Authentication Plan')).toContain('═')
     expect(render('## Goal')).toContain('─')
     expect(render('## Goal')).not.toContain('═')
+  })
+
+  it('distinguishes a third-level heading, which used to render as prose', () => {
+    // `### game.js — the whole rulebook` was indistinguishable from a paragraph.
+    const out = render('### Database', coloured)
+    expect(out).toContain('Database')
+    expect(out).toContain('\x1b[1m')
   })
 
   it('does not rule h3 and below, so deep documents stay readable', () => {
@@ -126,6 +152,27 @@ describe('tables', () => {
     expect(narrow).not.toContain('┌')
   })
 
+  it('fills the pane instead of stopping at the content width', () => {
+    // A table sized to its content leaves a ragged right edge beside prose that
+    // runs the full width, which reads as broken rather than compact.
+    const md = '| A | B |\n| --- | --- |\n| 1 | 2 |'
+    for (const line of renderDocument(parseBlocks(md), { ...plain, width: 50 })) {
+      if (line.text.startsWith('┌') || line.text.startsWith('└')) {
+        expect(displayWidth(line.text)).toBe(50)
+      }
+    }
+  })
+
+  it('shares the extra width out rather than padding one column', () => {
+    const md = '| Short | A much longer heading here |\n| --- | --- |\n| x | y |'
+    const lines = renderDocument(parseBlocks(md), { ...plain, width: 70 }).map((l) => l.text)
+    const top = lines.find((l) => l.startsWith('┌')) ?? ''
+    const [first, second] = top.slice(1, -1).split('┬')
+    // The wider column stays wider; both grow.
+    expect(second.length).toBeGreaterThan(first.length)
+    expect(first.length).toBeGreaterThan('Short'.length + 2)
+  })
+
   it('never emits a line wider than the width', () => {
     const md =
       '| Component | Status |\n| --- | --- |\n| A very long component name indeed | In progress |'
@@ -134,6 +181,54 @@ describe('tables', () => {
         expect(displayWidth(line.text), `width ${w}: ${line.text}`).toBeLessThanOrEqual(w)
       }
     }
+  })
+})
+
+describe('inline code', () => {
+  it('colours code rather than reversing it', () => {
+    // Reverse video turned every identifier into a filled block. A plan mentioning
+    // a dozen of them read like a redacted document.
+    const out = render('call `bestMove(board)` first', coloured)
+    expect(out).toContain(`38;5;${PALETTE.code.ansi256}`)
+    expect(out).not.toContain('\x1b[7m')
+  })
+
+  it('uses a different hue from headings, so the two never compete', () => {
+    const out = render('# Plan\n\nuse `bestMove`', coloured)
+    expect(out).toContain(`38;5;${PALETTE.brand.ansi256}`)
+    expect(out).toContain(`38;5;${PALETTE.code.ansi256}`)
+  })
+
+  it('still reads without colour, with the markers gone', () => {
+    const out = render('call `bestMove(board)` first')
+    expect(out).toContain('bestMove(board)')
+    expect(out).not.toContain('`')
+    expect(out).not.toContain('\x1b')
+  })
+})
+
+describe('borders', () => {
+  it('dims a table so the content dominates it', () => {
+    // Asserted per line: checking the whole render only proves *some* border was
+    // tinted, and the vertical bars are painted separately from the edges.
+    const md = '| A | B |\n| --- | --- |\n| 1 | 2 |'
+    const lines = renderDocument(parseBlocks(md), coloured).map((l) => l.text)
+    const border = `38;5;${PALETTE.border.ansi256}`
+    for (const glyph of ['┌', '├', '└']) {
+      const line = lines.find((l) => l.includes(glyph)) ?? ''
+      expect(line, glyph).toContain(border)
+    }
+    // And the row bars too, so a cell never sits against an undimmed edge.
+    expect(lines.find((l) => l.includes('A')) ?? '').toContain(border)
+  })
+
+  it('dims a code fence too', () => {
+    expect(render('```js\nx\n```', coloured)).toContain(`38;5;${PALETTE.border.ansi256}`)
+  })
+
+  it('leaves the code itself unpainted, so a highlighter is never fought', () => {
+    const out = render('```js\nconst x = 1\n```', coloured)
+    expect(out).toContain('const x = 1')
   })
 })
 
