@@ -8,7 +8,7 @@
  * terminal.
  */
 import type { Align, Block, ListBlock } from '../blocks.js'
-import { style } from './ansi.js'
+import { paint, PALETTE, style, type Colour, type ColourDepth } from './ansi.js'
 import { displayWidth, truncate, wrap } from './wrap.js'
 
 export interface Line {
@@ -30,6 +30,11 @@ export interface RenderOptions {
   width: number
   unicode: boolean
   colour: boolean
+  /**
+   * How much colour the terminal can show. Defaults to 256, which every terminal
+   * this mode targets has had for a decade; `colour: false` still wins outright.
+   */
+  depth?: ColourDepth
 }
 
 interface Glyphs {
@@ -112,12 +117,31 @@ function plain(text: string): string {
   return inline(text, { width: 0, unicode: false, colour: false })
 }
 
+/**
+ * How much colour to use.
+ *
+ * Derived from the existing `colour` flag rather than a new option, so a pipe and
+ * NO_COLOR keep emitting no escapes at all. A terminal that reports only the basic
+ * sixteen still gets colour, just coarser.
+ */
+function depthOf(o: RenderOptions): ColourDepth {
+  return o.colour ? (o.depth ?? 'ansi256') : 'none'
+}
+
+function tint(text: string, colour: Colour, o: RenderOptions): string {
+  return paint(text, colour, depthOf(o))
+}
+
 function inline(text: string, o: RenderOptions): string {
   const on = { enabled: o.colour }
   return unhtml(text)
     .replace(/!\[([^\]]*)\]\([^)\s]*\)/g, (_m, alt: string) => style(alt, 'italic', on))
-    .replace(/\[([^\]]+)\]\([^)\s]*\)/g, (_m, label: string) => style(label, 'underline', on))
-    .replace(/`([^`]+)`/g, (_m, code: string) => style(code, 'inverse', on))
+    .replace(/\[([^\]]+)\]\([^)\s]*\)/g, (_m, label: string) =>
+      tint(style(label, 'underline', on), PALETTE.link, o)
+    )
+    // A colour rather than reverse video: a plan mentioning a dozen identifiers
+    // turned into a page of filled blocks, which read as redaction.
+    .replace(/`([^`]+)`/g, (_m, code: string) => tint(code, PALETTE.code, o))
     .replace(/\*\*([^*]+)\*\*/g, (_m, t: string) => style(t, 'bold', on))
     .replace(/__([^_]+)__/g, (_m, t: string) => style(t, 'bold', on))
     .replace(/~~([^~]+)~~/g, (_m, t: string) => style(t, 'dim', on))
@@ -170,12 +194,18 @@ function renderCode(
 ): void {
   const label = block.language === '' ? '' : ` ${block.language} `
   const head = `${g.box.tl}${g.box.h}${label}`
-  out.push({ text: head + g.box.h.repeat(Math.max(0, o.width - displayWidth(head))) })
+  out.push({
+    text: tint(head + g.box.h.repeat(Math.max(0, o.width - displayWidth(head))), PALETTE.border, o),
+  })
   for (const raw of block.lines) {
     // Truncate, never wrap: reflowing code changes what it says.
-    out.push({ text: `${g.box.v} ${truncate(raw, Math.max(1, o.width - 2))}` })
+    // The border is tinted, the code is not: painting code would fight anything
+    // the reader's own highlighter does with it.
+    out.push({
+      text: `${tint(g.box.v, PALETTE.border, o)} ${truncate(raw, Math.max(1, o.width - 2))}`,
+    })
   }
-  out.push({ text: g.box.bl + g.box.h.repeat(Math.max(0, o.width - 1)) })
+  out.push({ text: tint(g.box.bl + g.box.h.repeat(Math.max(0, o.width - 1)), PALETTE.border, o) })
   out.push({ text: '' })
 }
 
@@ -202,6 +232,22 @@ function renderTable(
   // Borders and padding cost 3 columns per column plus one closing edge.
   const needed = widths.reduce((a, b) => a + b + 3, 1)
 
+  // Spread any slack across the columns so the table meets the right edge. A
+  // content-width table beside full-width prose reads as broken, not compact.
+  // Proportional, so a column that was wider stays wider.
+  if (needed < o.width) {
+    let slack = o.width - needed
+    const total = widths.reduce((a, b) => a + b, 0) || 1
+    const shares = widths.map((w) => Math.floor((slack * w) / total))
+    shares.forEach((share, n) => {
+      widths[n] += share
+      slack -= share
+    })
+    // Whatever rounding left over goes to the widest column, where it shows least.
+    const widest = widths.indexOf(Math.max(...widths))
+    widths[widest] += slack
+  }
+
   if (needed > o.width) {
     // Stacked rather than overflowing: a table wider than the pane would push
     // every column to its right off screen.
@@ -218,9 +264,10 @@ function renderTable(
   }
 
   const edge = (left: string, mid: string, right: string): string =>
-    left + widths.map((w) => g.box.h.repeat(w + 2)).join(mid) + right
+    tint(left + widths.map((w) => g.box.h.repeat(w + 2)).join(mid) + right, PALETTE.border, o)
+  const bar = tint(g.box.v, PALETTE.border, o)
   const row = (cells: string[]): string =>
-    g.box.v + cells.map((c, n) => ` ${alignCell(c, widths[n], block.aligns[n])} `).join(g.box.v) + g.box.v
+    bar + cells.map((c, n) => ` ${alignCell(c, widths[n], block.aligns[n])} `).join(bar) + bar
 
   out.push({ text: edge(g.box.tl, g.box.tDown, g.box.tr) })
   out.push({ text: row(block.header.map((h) => inline(h, o))) })
@@ -243,8 +290,12 @@ export function renderDocument(blocks: Block[], o: RenderOptions): Line[] {
     switch (block.kind) {
       case 'heading': {
         const text = inline(block.text, o)
+        // Levels 1-2 take the brand colour, level 3+ takes weight alone, so three
+        // tiers are visible. Before this, `###` rendered as plain prose.
+        const painted =
+          block.level <= 2 ? tint(text, PALETTE.brand, o) : text
         out.push({
-          text: block.level <= 2 ? style(text, 'bold', { enabled: o.colour }) : text,
+          text: style(painted, 'bold', { enabled: o.colour }),
           heading: {
             id: headingId(block.text, seen),
             level: block.level,
@@ -253,9 +304,10 @@ export function renderDocument(blocks: Block[], o: RenderOptions): Line[] {
             text: plain(block.text),
           },
         })
-        // Only h1 and h2 get a rule. Ruling every level turns a deep plan into
-        // more rule than prose.
-        if (block.level === 1 || block.level === 2) {
+        // The rule is a fallback, not decoration: with colour it costs a line per
+        // heading and reads as an artifact, but without colour it is the only
+        // hierarchy signal left — `-t plan.md | less` emits no escapes at all.
+        if (!o.colour && (block.level === 1 || block.level === 2)) {
           const glyph = block.level === 1 ? g.h1Rule : g.h2Rule
           out.push({ text: glyph.repeat(Math.min(o.width, Math.max(4, displayWidth(text)))) })
         }
@@ -274,12 +326,14 @@ export function renderDocument(blocks: Block[], o: RenderOptions): Line[] {
       }
       case 'quote':
         for (const chunk of wrap(inline(block.text, o), Math.max(1, o.width - 2))) {
-          out.push({ text: `${g.quote} ${style(chunk, 'dim', { enabled: o.colour })}` })
+          out.push({
+            text: `${tint(g.quote, PALETTE.border, o)} ${tint(chunk, PALETTE.muted, o)}`,
+          })
         }
         out.push({ text: '' })
         break
       case 'rule':
-        out.push({ text: g.rule.repeat(o.width) })
+        out.push({ text: tint(g.rule.repeat(o.width), PALETTE.border, o) })
         out.push({ text: '' })
         break
       case 'code':

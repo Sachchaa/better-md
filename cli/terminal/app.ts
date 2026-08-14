@@ -19,6 +19,8 @@ import {
   style,
   supportsColour,
   supportsUnicode,
+  colourDepth,
+  type ColourDepth,
 } from './ansi.js'
 import { EDITOR_HELP, resolveEditor } from './editor.js'
 import { decodeKeys, type Key } from './keys.js'
@@ -184,6 +186,10 @@ export function createApp(options: AppOptions): App {
   let loading: Promise<void> = Promise.resolve()
 
   const colour = (): boolean => supportsColour(env, tty.isTTY)
+  // Detected once per draw from the same env: a terminal advertising truecolor
+  // gets the exact brand green, a 256-colour one the nearest index, and a plain
+  // xterm the basic sixteen rather than nothing.
+  const depth = (): ColourDepth => colourDepth(env, tty.isTTY)
 
   const columns = (): number =>
     Number.isFinite(tty.columns) && tty.columns > 0 ? tty.columns : DEFAULT_COLUMNS
@@ -284,6 +290,7 @@ export function createApp(options: AppOptions): App {
             width: columns(),
             unicode: supportsUnicode(env),
             colour: colour(),
+            depth: depth(),
           }).slice(0, height)
     // Pad to a full pane so a shorter document does not leave the previous
     // frame's lines behind it.
@@ -327,6 +334,7 @@ export function createApp(options: AppOptions): App {
       width: columns(),
       unicode: supportsUnicode(env),
       colour: colour(),
+      depth: depth(),
     })
 
     // -1 as the fallback distinguishes "the heading is gone" from "the heading

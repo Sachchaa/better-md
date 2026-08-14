@@ -172,8 +172,16 @@ keeps your place in the section you were reading rather than jumping to the top.
 | `?` | every key |
 | `q` | quit |
 
+Headings take the brand green, inline code a soft blue, and borders recede so the
+content leads. How much colour depends on what the terminal admits to: `COLORTERM`
+gets exact 24-bit colour, a `256color` terminal the nearest palette index, and a
+plain `xterm` the basic sixteen rather than nothing.
+
 Piping or redirecting prints the rendered document as plain text and exits, so
-`better-md plan.md -t | less` and `> plan.txt` both work.
+`better-md plan.md -t | less` and `> plan.txt` both work. With no colour to lean on,
+headings get a rule underneath instead — it is a fallback for that case, not
+decoration, which is why you will not see one in a colour terminal. `NO_COLOR` is
+honoured.
 
 What it deliberately does not do: there is no editing in the terminal — `e` opens
 your editor and `b` opens the browser editor, which is where two-way editing lives.
