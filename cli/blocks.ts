@@ -102,6 +102,9 @@ function tableAt(lines: string[], i: number): Align[] | null {
 /** One list line: `- text`, `* text`, `+ text` or `1. text`, with its indent. */
 const LIST_ITEM = /^([ \t]*)([-*+]|\d+\.)[ \t]+(.*)$/
 
+/** A fence opener or closer, at any indent — fences nest inside list items. */
+const FENCE = /^[ \t]*```/
+
 /** Indent in columns. A tab counts as four, the usual Markdown convention. */
 function indentWidth(ws: string): number {
   let n = 0
@@ -218,14 +221,36 @@ export function parseBlocks(md: string): Block[] {
 
     if (LIST_ITEM.test(line)) {
       const entries: Array<{ indent: number; ordered: boolean; text: string }> = []
-      for (let m = LIST_ITEM.exec(lines[i]); i < lines.length && m !== null; ) {
-        entries.push({
-          indent: indentWidth(m[1]),
-          ordered: /\d/.test(m[2]),
-          text: m[3],
-        })
+      while (i < lines.length) {
+        const m = LIST_ITEM.exec(lines[i])
+        if (m !== null) {
+          entries.push({
+            indent: indentWidth(m[1]),
+            ordered: /\d/.test(m[2]),
+            text: m[3],
+          })
+          i++
+          continue
+        }
+
+        // An indented, non-blank line belongs to the item above it. Ending the
+        // list here instead made the rest of a wrapped bullet a stray paragraph —
+        // and, worse, split an ordered list in two so the numbering restarted.
+        //
+        // Indentation is the signal, and only indentation: a flush-left line is
+        // left as its own paragraph. Swallowing that would be the more damaging
+        // error, silently eating a paragraph the author had separated.
+        // A fence is structure, not prose, even indented under an item: swallowing
+        // it as text left the backticks in the paragraph and lost the code block.
+        if (FENCE.test(lines[i])) break
+
+        // One rule: indented past the item's own marker continues it. That covers
+        // the flush-left case too, since indent 0 is never past anything.
+        const last = entries[entries.length - 1]
+        const continuation = /^([ \t]*)(\S.*)$/.exec(lines[i])
+        if (continuation === null || indentWidth(continuation[1]) <= last.indent) break
+        last.text = `${last.text} ${continuation[2]}`
         i++
-        m = i < lines.length ? LIST_ITEM.exec(lines[i]) : null
       }
       blocks.push(buildList(entries))
       continue
