@@ -67,6 +67,34 @@ describe('mdToHtml', () => {
     expect(out).toContain('&lt;b&gt;x&lt;/b&gt;')
   })
 
+  it('records the fence language, so editing the preview cannot lose it', () => {
+    // Every keystroke in the preview rewrites the whole document through
+    // htmlToMd. With the language nowhere in the HTML, a stray edit in a
+    // paragraph silently stripped ```ts off every code block in the file.
+    const out = mdToHtml('```ts\nconst x = 1\n```')
+    expect(out).toContain('language-ts')
+  })
+
+  it('escapes a language that tries to break out of the attribute', () => {
+    // The language is whatever followed the backticks, so it is user input on
+    // its way into an attribute.
+    const out = mdToHtml('```" onmouseover="alert(1)\nx\n```')
+    expect(out).not.toContain('onmouseover="alert(1)"')
+    expect(out).toContain('&quot;')
+  })
+
+  it('leaves a fence with no language alone', () => {
+    expect(mdToHtml('```\nx\n```')).not.toContain('language-')
+  })
+
+  it('puts only the language token in the class', () => {
+    // An info string can carry more than the language. All of it in one class
+    // attribute silently becomes several classes, so the convention breaks and
+    // a highlighter looking for `language-js` never finds it.
+    const out = mdToHtml('```js title="app.js"\nx\n```')
+    expect(out).toContain('class="language-js"')
+  })
+
   it('renders indented (list-nested) fenced code blocks without stray backticks', () => {
     const md = ['- `typedefs.graphql`: add', '  ```graphql', '  input X { id: ID! }', '  ```'].join(
       '\n'
@@ -309,5 +337,22 @@ describe('nested lists', () => {
   it('still round-trips a flat list', () => {
     expect(roundTrip('- one\n- two')).toBe('- one\n- two')
     expect(roundTrip('1. one\n2. two')).toBe('1. one\n2. two')
+  })
+
+  it('round-trips a fenced block with its language', () => {
+    // The user-facing shape of the bug: open a plan, type one character in the
+    // preview, save — and every ```ts in the file came back as a bare ```.
+    expect(roundTrip('```ts\nconst x = 1\n```')).toBe('```ts\nconst x = 1\n```')
+  })
+
+  it('round-trips a fence that never had a language', () => {
+    expect(roundTrip('```\nplain\n```')).toBe('```\nplain\n```')
+  })
+
+  it('round-trips the whole info string, not just its first word', () => {
+    // Truncating at the first space would be a new silent loss in place of the
+    // old one — the same defect, one word narrower.
+    const md = '```js title="app.js"\nconst x = 1\n```'
+    expect(roundTrip(md)).toBe(md)
   })
 })
