@@ -66,6 +66,34 @@ test('edits made in the browser save back to the file on disk', async ({ page })
     .toContain('hello from playwright')
 })
 
+test('editing the preview does not strip a code fence language from the file', async ({ page }) => {
+  // The whole path, as a user hits it: a plan with ```ts on disk, one keystroke
+  // typed into the *rendered* side, save. Every preview edit rewrites the file
+  // through htmlToMd, so a language absent from the HTML was a language deleted
+  // from disk — silently, from a block the user never touched.
+  const url = await startCli()
+  await fs.writeFile(
+    path.join(workdir, 'hello.md'),
+    '# hello\n\nProse here.\n\n```ts\nconst x = 1\n```\n',
+    'utf8'
+  )
+  await page.goto(url)
+  await expect(page.locator('textarea')).toHaveValue(/```ts/)
+
+  // Type into the preview, in the paragraph — nowhere near the code block.
+  const paragraph = page.locator('[contenteditable] p').filter({ hasText: 'Prose here.' }).first()
+  await paragraph.click()
+  await page.keyboard.press('End')
+  await page.keyboard.type(' Edited.')
+
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s')
+
+  await expect
+    .poll(async () => fs.readFile(path.join(workdir, 'hello.md'), 'utf8'), { timeout: 10_000 })
+    .toContain('Edited.')
+  expect(await fs.readFile(path.join(workdir, 'hello.md'), 'utf8')).toContain('```ts')
+})
+
 test('the token is stripped from the address bar after boot', async ({ page }) => {
   const url = await startCli()
   await page.goto(url)

@@ -146,12 +146,34 @@ function renderBlock(block: Block): string {
       )
     case 'paragraph':
       return '<p style="margin:.75rem 0;line-height:1.75">' + inlineMd(block.text) + '</p>'
-    case 'code':
+    case 'code': {
+      // The language is carried on the <code> element, not dropped. Every
+      // keystroke in the preview rewrites the document through htmlToMd, so a
+      // language absent from the HTML is a language deleted from the file.
+      //
+      // The class carries the language alone — `language-<x>` is the
+      // CommonMark-recommended convention and what highlighters look for, and a
+      // multi-word info string in there would silently become several classes.
+      //
+      // An info string can say more than the language (```js title="app.js"),
+      // so the full thing rides along in data-info when it differs. Truncating
+      // it would swap one silent loss for a narrower one.
+      //
+      // Both are user input on their way into attributes, hence esc + attrSafe.
+      const info = block.language
+      const lang = info.split(/\s+/)[0]
+      const safe = (v: string): string => attrSafe(esc(v))
+      const cls = lang === '' ? '' : ` class="language-${safe(lang)}"`
+      const data = info === lang ? '' : ` data-info="${safe(info)}"`
       return (
-        '<pre style="margin:.95rem 0;padding:14px 16px;background:var(--code-bg);border:1px solid var(--border);border-radius:10px;overflow:auto"><code style="font:0.85em/1.65 var(--mono);white-space:pre">' +
+        '<pre style="margin:.95rem 0;padding:14px 16px;background:var(--code-bg);border:1px solid var(--border);border-radius:10px;overflow:auto"><code' +
+        cls +
+        data +
+        ' style="font:0.85em/1.65 var(--mono);white-space:pre">' +
         esc(block.lines.join('\n')) +
         '</code></pre>'
       )
+    }
     case 'quote':
       return (
         '<blockquote style="margin:.95rem 0;padding:.35rem 0 .35rem 1.05rem;border-left:3px solid var(--accent);color:var(--muted)">' +
@@ -256,8 +278,21 @@ export function htmlToMd(root: HTMLElement): string {
         return el.parentNode && (el.parentNode as HTMLElement).tagName === 'PRE'
           ? kids(el)
           : '`' + kids(el) + '`'
-      case 'pre':
-        return '\n```\n' + (el.textContent || '').replace(/\n+$/, '') + '\n```\n\n'
+      case 'pre': {
+        // Recover the info string the fence was opened with, from the <code>
+        // child where mdToHtml puts it. data-info wins when present: it holds
+        // the whole string, while the class holds only the language token.
+        const code = el.querySelector('code')
+        const match = /(?:^|\s)language-(\S+)/.exec(code?.getAttribute('class') ?? '')
+        const info = code?.getAttribute('data-info') ?? (match === null ? '' : match[1])
+        return (
+          '\n```' +
+          info +
+          '\n' +
+          (el.textContent || '').replace(/\n+$/, '') +
+          '\n```\n\n'
+        )
+      }
       case 'a':
         return '[' + kids(el) + '](' + (el.getAttribute('href') || '') + ')'
       case 'img':
